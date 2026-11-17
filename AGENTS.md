@@ -1,4 +1,4 @@
-# AGENTS.md — Postman Lite
+# AGENTS.md — Request Lite
 
 Локальный аналог Postman: Electron + Vue 3 + Vite (electron-vite) + Pinia. Чистый JavaScript (без TypeScript). Тёмная тема в стиле Postman. Проект создаётся с нуля, хранение — JSON-файлы.
 

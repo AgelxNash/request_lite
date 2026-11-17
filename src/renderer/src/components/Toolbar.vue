@@ -24,7 +24,7 @@ function select(event) {
 
 <template>
   <header class="toolbar">
-    <div class="toolbar-brand"><span class="brand-accent">Postman</span> Lite</div>
+    <div class="toolbar-brand"><span class="brand-accent">Request</span> Lite</div>
     <div class="toolbar-center">
       <select
         class="env-select"

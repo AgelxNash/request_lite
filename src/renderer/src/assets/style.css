@@ -426,14 +426,20 @@ select:disabled {
 /* ===== Диалог окружений ===== */
 /* Две класс-специфичности: базовый .dialog объявлен ниже по файлу и перебивал бы width. */
 .dialog.env-dialog {
+  display: flex;
+  flex-direction: column;
   width: 720px;
+  /* Не выше экрана: перегруз уходит в скролл колонки редактора. */
+  max-height: calc(100vh - 120px);
 }
 
 .env-dialog-layout {
   display: grid;
   grid-template-columns: 200px 1fr;
   gap: 14px;
-  min-height: 280px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .env-list {
@@ -455,6 +461,8 @@ select:disabled {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .env-name-input {

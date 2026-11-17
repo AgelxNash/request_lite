@@ -1,7 +1,7 @@
 {
-  "name": "postman-lite",
+  "name": "request-lite",
   "version": "0.1.0",
-  "description": "Локальный аналог Postman на Electron + Vue 3",
+  "description": "Локальный HTTP-клиент в стиле Postman на Electron + Vue 3",
   "type": "module",
   "main": "out/main/index.js",
   "private": true,
@@ -12,8 +12,8 @@
     "smoke": "node scripts/smoke.mjs"
   },
   "build": {
-    "appId": "com.romchik.postman-lite",
-    "productName": "Postman Lite",
+    "appId": "com.romchik.request-lite",
+    "productName": "Request Lite",
     "directories": {
       "output": "release"
     },

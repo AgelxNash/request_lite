@@ -80,6 +80,9 @@ function buildMenu() {
 app.whenReady().then(async () => {
   // Дерево доступности веб-контента — для ассистивных технологий и UI-тестирования
   app.setAccessibilitySupportEnabled(true)
+  // Хранилище закреплено за прежней папкой: переименование продукта (Request Lite)
+  // иначе сменило бы userData и «потеряло» существующие проекты.
+  app.setPath('userData', join(app.getPath('appData'), 'postman-lite'))
   initStorage(join(app.getPath('userData'), 'storage'))
   await bootstrap()
   registerIpc()
