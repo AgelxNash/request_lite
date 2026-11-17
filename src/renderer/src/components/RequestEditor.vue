@@ -94,6 +94,7 @@ function cancel() {
         :value="tabs.activeTab.url"
         aria-label="URL запроса"
         @input="tabs.updateActive({ url: $event.target.value })"
+        @keydown.enter.prevent="send"
       />
       <button
         v-if="!tabs.activeTab.sending"
