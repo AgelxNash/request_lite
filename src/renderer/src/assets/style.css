@@ -437,14 +437,121 @@ select:disabled {
   padding: 12px;
 }
 
-.placeholder {
+.tab-counter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.request-tab.active .tab-counter {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.tab-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pane-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pane-label {
+  color: var(--text-secondary);
+}
+
+.pane-select {
+  width: 160px;
+}
+
+.pane-hint {
   margin: 0;
-  padding: 24px;
-  text-align: center;
+  padding: 14px;
   color: var(--text-secondary);
   background: var(--bg-secondary);
   border: 1px dashed var(--border);
   border-radius: 6px;
+  text-align: center;
+}
+
+.body-textarea {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: center;
+  max-width: 560px;
+}
+
+.field-label {
+  color: var(--text-secondary);
+}
+
+.ssl-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ===== KV-таблица ===== */
+.kv-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 720px;
+}
+
+.kv-row {
+  display: grid;
+  grid-template-columns: auto 1fr 1.4fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.kv-row.disabled .kv-key,
+.kv-row.disabled .kv-value {
+  color: var(--text-disabled);
+}
+
+.kv-check {
+  accent-color: var(--accent);
+}
+
+.kv-remove {
+  color: var(--text-secondary);
+}
+
+.kv-empty {
+  margin: 0;
+  padding: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  text-align: center;
 }
 
 /* ===== Ответ ===== */
@@ -478,6 +585,119 @@ select:disabled {
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
+}
+
+.status-pill {
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.status-pill.status-ok {
+  color: var(--status-ok);
+  background: color-mix(in srgb, var(--status-ok) 14%, transparent);
+}
+
+.status-pill.status-warn {
+  color: var(--status-warn);
+  background: color-mix(in srgb, var(--status-warn) 14%, transparent);
+}
+
+.status-pill.status-err {
+  color: var(--status-err);
+  background: color-mix(in srgb, var(--status-err) 14%, transparent);
+}
+
+.meta-pill {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.meta-pill.warn {
+  color: var(--status-warn);
+}
+
+.response-tabs-row {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.response-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.response-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px;
+  padding: 12px;
+  border: 1px solid var(--status-err);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--status-err) 10%, transparent);
+  color: var(--status-err);
+}
+
+.response-error.aborted {
+  border-color: var(--status-warn);
+  background: color-mix(in srgb, var(--status-warn) 10%, transparent);
+  color: var(--status-warn);
+}
+
+.code-view {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+
+.raw-text {
+  margin: 0;
+  font: inherit;
+}
+
+.tok-key {
+  color: var(--method-put);
+}
+
+.tok-string {
+  color: var(--status-ok);
+}
+
+.tok-number {
+  color: var(--method-patch);
+}
+
+.tok-bool {
+  color: var(--method-head);
+}
+
+.response-headers .resp-header-key {
+  padding: 4px 8px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.response-headers .resp-header-value {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.response-headers .kv-row {
+  grid-template-columns: 220px 1fr;
 }
 
 /* ===== Диалог ===== */

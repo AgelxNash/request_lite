@@ -19,6 +19,13 @@ const api = {
     set: (patch) => ipcRenderer.invoke('settings:set', patch)
   },
   openDataFolder: () => ipcRenderer.invoke('data:openFolder'),
+  http: {
+    // requestId генерирует renderer и знает его ДО отправки — иначе Cancel во время
+    // выполнения не сможет указать, какой запрос прервать.
+    send: (requestId, request) =>
+      ipcRenderer.invoke('http:request', { requestId, request }).then((result) => ({ requestId, ...result })),
+    cancel: (requestId) => ipcRenderer.invoke('http:cancel', requestId)
+  },
   onMenu: (callback) => {
     ipcRenderer.on('menu:new-project', () => callback('new-project'))
   }

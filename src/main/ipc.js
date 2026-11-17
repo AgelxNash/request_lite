@@ -1,7 +1,8 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
-// (см. src/preload/index.js). Префиксы: projects:*, settings:*, data:*.
+// (см. src/preload/index.js). Префиксы: projects:*, settings:*, data:*, http:*.
 import { ipcMain, shell } from 'electron'
 import * as storage from './storage.js'
+import { sendRequest, cancelRequest } from './http.js'
 
 // Открывает папку хранилища в системном файловом менеджере (используется и меню).
 export function openStorageFolder() {
@@ -25,5 +26,19 @@ export function registerIpc() {
     const error = await openStorageFolder()
     // shell.openPath возвращает '' при успехе, иначе текст ошибки
     return error === '' ? { ok: true } : { ok: false, error }
+  })
+
+  // HTTP: выполнение строго в main; renderer присылает снимок вкладки + requestId.
+  ipcMain.handle('http:request', async (_event, { requestId, request }) => {
+    try {
+      const response = await sendRequest(request, requestId)
+      return { ok: true, response }
+    } catch (err) {
+      return { ok: false, error: { code: err.code ?? 'NETWORK', message: err.message } }
+    }
+  })
+  ipcMain.handle('http:cancel', (_event, requestId) => {
+    cancelRequest(requestId)
+    return true
   })
 }
