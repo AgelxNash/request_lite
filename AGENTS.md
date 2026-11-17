@@ -36,13 +36,14 @@ src/renderer/src/
 Ключевые правила:
 - **HTTP-запросы выполняются ТОЛЬКО в main-процессе** (`src/main/http.js` через Node `fetch`, AbortController для Cancel, таймаут 30с, лимит тела ответа 10МБ). Никаких fetch из renderer — так снимается CORS.
 - Renderer не имеет доступа к Node (`nodeIntegration: false`); всё общение через preload `window.api.*`.
-- IPC-каналы строго по префиксам: `projects:*`, `requests:*`, `environments:*`, `http:request`/`http:cancel`, `data:openFolder`.
+- IPC-каналы строго по префиксам: `projects:*`, `requests:*`, `environments:*`, `settings:*`, `http:request`/`http:cancel`, `data:openFolder`.
 - Запись JSON — атомарная (tmp + rename) в `storage.js`.
 - Зависимости в renderer не тянуть без необходимости: JSON-подсветка — своя лёгкая реализация (`format.js`), без библиотек.
 
 ## Хранение (`app.getPath('userData')/storage/`)
 - `projects.json` — индекс проектов `{id, name, createdAt, updatedAt}`
 - `projects/<id>.json` — один файл на проект: `requests[]`, `environments[]`, `activeEnvId`
+- `settings.json` — настройки приложения `{theme: 'dark' | 'light', ...}` (читается синхронно в preload при старте ради темы без вспышки)
 - Request: `{id, name, method, url, params[], headers[], body{type, json|form|text}, auth{type: none|bearer|basic|apikey}, sslVerify}`
 - Environment: `{id, name, variables:[{key, value, enabled}]}`
 
