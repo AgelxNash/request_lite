@@ -11,6 +11,7 @@ const http = await import('../src/main/http.js')
 const format = await import('../src/renderer/src/lib/format.js')
 const defaults = await import('../src/renderer/src/lib/defaults.js')
 const requestName = await import('../src/renderer/src/lib/request-name.js')
+const variables = await import('../src/renderer/src/lib/variables.js')
 
 let passed = 0
 
@@ -151,6 +152,38 @@ try {
     await assert.rejects(() => storage.deleteRequest(requestsProject.id, 'req-1'), /не найден/)
     const onDisk = await storage.getProject(requestsProject.id)
     assert.equal(onDisk.requests.length, 1)
+  })
+
+  // --- Окружения проекта: save/list/setActive/delete ---
+  const envProject = await storage.createProject('Хранилище окружений')
+
+  await check('saveEnvironment upsert: добавление, обновление на позиции, пустое имя', async () => {
+    await storage.saveEnvironment(envProject.id, {
+      id: 'env-1',
+      name: 'Dev',
+      variables: [{ id: 'v1', key: 'baseUrl', value: 'http://localhost', enabled: true }]
+    })
+    await storage.saveEnvironment(envProject.id, { id: 'env-2', name: 'Prod', variables: [] })
+    const list = await storage.saveEnvironment(envProject.id, { id: 'env-1', name: 'Dev v2' })
+    assert.equal(list.length, 2)
+    assert.equal(list[0].name, 'Dev v2', 'позиция сохранена')
+    assert.equal(list[1].name, 'Prod')
+    await assert.rejects(() => storage.saveEnvironment(envProject.id, { id: 'env-3', name: '  ' }), /пустым/)
+  })
+
+  await check('setActiveEnvironment персистентен и отклоняет неизвестный id', async () => {
+    const { activeEnvId } = await storage.setActiveEnvironment(envProject.id, 'env-1')
+    assert.equal(activeEnvId, 'env-1')
+    const onDisk = await storage.getProject(envProject.id)
+    assert.equal(onDisk.activeEnvId, 'env-1')
+    await assert.rejects(() => storage.setActiveEnvironment(envProject.id, 'nope'), /не найден/)
+  })
+
+  await check('deleteEnvironment обнуляет activeEnvId удалённого активного', async () => {
+    const { activeEnvId, environments } = await storage.deleteEnvironment(envProject.id, 'env-1')
+    assert.equal(environments.length, 1)
+    assert.equal(activeEnvId, null)
+    await assert.rejects(() => storage.deleteEnvironment(envProject.id, 'env-1'), /не найден/)
   })
 
   // --- Невалидный JSON не затирается ---
@@ -522,6 +555,71 @@ try {
       assert.equal(requestName.suggestRequestName('https://example.com'), 'example.com')
       assert.equal(requestName.suggestRequestName('не URL'), '')
       assert.equal(requestName.suggestRequestName(''), '')
+    })
+
+    // --- Подстановка переменных окружения (lib/variables.js) ---
+
+    await check('applyEnvironment подставляет url/params/headers/auth/body, выключенная — литерально', () => {
+      const vars = variables.buildVars([
+        { key: 'baseUrl', value: 'http://localhost:4545', enabled: true },
+        { key: 'token', value: 't-1', enabled: true },
+        { key: 'page', value: '2', enabled: true },
+        { key: 'debug', value: '1', enabled: false }
+      ])
+      const resolved = variables.applyEnvironment(
+        {
+          url: '{{baseUrl}}/echo?page={{page}}',
+          params: [{ id: 'p1', key: 'page', value: '{{page}}', enabled: true }],
+          headers: [{ id: 'h1', key: 'Authorization', value: 'Bearer {{token}}', enabled: true }],
+          auth: { type: 'bearer', token: '{{token}}' },
+          body: { type: 'json', json: '{"page":"{{page}}","debug":"{{debug}}"}' }
+        },
+        vars
+      )
+      assert.equal(resolved.url, 'http://localhost:4545/echo?page=2')
+      assert.equal(resolved.params[0].value, '2')
+      assert.equal(resolved.headers[0].value, 'Bearer t-1')
+      assert.equal(resolved.auth.token, 't-1', 'auth-token подставляется')
+      assert.equal(resolved.body.json, '{"page":"2","debug":"{{debug}}"}', 'выключенная переменная не подставляется')
+    })
+
+    await check('applyEnvironment: пустой словарь и неразрешённые плейсхолдеры литеральны', () => {
+      const resolved = variables.applyEnvironment(
+        { url: '{{baseUrl}}/x', params: [], headers: [], body: { type: 'text', text: '{{a}}{{b}}' } },
+        variables.buildVars([])
+      )
+      assert.equal(resolved.url, '{{baseUrl}}/x')
+      assert.equal(resolved.body.text, '{{a}}{{b}}')
+    })
+
+    await check('applyEnvironment подставляет ключи и значения в активном слоте body', () => {
+      const vars = variables.buildVars([
+        { key: 'k', value: 'fieldX', enabled: true },
+        { key: 'v', value: 'valY', enabled: true }
+      ])
+      const formData = variables.applyEnvironment(
+        {
+          url: 'http://x',
+          params: [],
+          headers: [],
+          body: { type: 'form-data', form: [{ id: 'f1', key: '{{k}}', value: '{{v}}', enabled: true }] }
+        },
+        vars
+      )
+      assert.equal(formData.body.form[0].key, 'fieldX')
+      assert.equal(formData.body.form[0].value, 'valY')
+
+      const urlencoded = variables.applyEnvironment(
+        {
+          url: 'http://x',
+          params: [],
+          headers: [],
+          body: { type: 'urlencoded', urlencoded: [{ id: 'u1', key: '{{k}}', value: '{{v}}', enabled: true }] }
+        },
+        vars
+      )
+      assert.equal(urlencoded.body.urlencoded[0].key, 'fieldX')
+      assert.equal(urlencoded.body.urlencoded[0].value, 'valY')
     })
   } finally {
     await closeServer()

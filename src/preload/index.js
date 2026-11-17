@@ -19,6 +19,14 @@ const api = {
     save: (projectId, request) => ipcRenderer.invoke('requests:save', { projectId, request }),
     delete: (projectId, requestId) => ipcRenderer.invoke('requests:delete', { projectId, requestId })
   },
+  environments: {
+    list: (projectId) => ipcRenderer.invoke('environments:list', projectId),
+    save: (projectId, environment) => ipcRenderer.invoke('environments:save', { projectId, environment }),
+    delete: (projectId, environmentId) =>
+      ipcRenderer.invoke('environments:delete', { projectId, environmentId }),
+    setActive: (projectId, environmentId) =>
+      ipcRenderer.invoke('environments:setActive', { projectId, environmentId })
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch) => ipcRenderer.invoke('settings:set', patch)

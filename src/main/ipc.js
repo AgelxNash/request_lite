@@ -21,6 +21,17 @@ export function registerIpc() {
     storage.deleteRequest(projectId, requestId)
   )
 
+  ipcMain.handle('environments:list', (_event, projectId) => storage.listEnvironments(projectId))
+  ipcMain.handle('environments:save', (_event, { projectId, environment }) =>
+    storage.saveEnvironment(projectId, environment)
+  )
+  ipcMain.handle('environments:delete', (_event, { projectId, environmentId }) =>
+    storage.deleteEnvironment(projectId, environmentId)
+  )
+  ipcMain.handle('environments:setActive', (_event, { projectId, environmentId }) =>
+    storage.setActiveEnvironment(projectId, environmentId)
+  )
+
   ipcMain.handle('settings:get', () => storage.getSettings())
   ipcMain.handle('settings:set', (_event, patch) => storage.setSettings(patch))
   // Блокирующий канал для preload: начальные настройки до первого кадра (тема без вспышки).

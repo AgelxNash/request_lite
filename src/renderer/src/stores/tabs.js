@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { DEFAULT_HEADERS } from '../lib/defaults.js'
 import { suggestRequestName } from '../lib/request-name.js'
+import { applyEnvironment, buildVars } from '../lib/variables.js'
+import { useEnvironmentsStore } from './environments.js'
 import { useProjectsStore } from './projects.js'
 import { useRequestsStore } from './requests.js'
 
@@ -211,7 +213,13 @@ export const useTabsStore = defineStore('tabs', {
       try {
         const requestId = crypto.randomUUID()
         tab.requestId = requestId
-        const result = await window.api?.http.send(requestId, toSnapshot(tab))
+        // Переменные активного окружения подставляются в момент отправки, до IPC;
+        // неразрешённые плейсхолдеры уходят литерально.
+        const environments = useEnvironmentsStore()
+        const vars = buildVars(
+          environments.items.find((e) => e.id === environments.activeId)?.variables
+        )
+        const result = await window.api?.http.send(requestId, applyEnvironment(toSnapshot(tab), vars))
         if (!result) {
           tab.error = { code: 'NETWORK', message: 'Мост main-процесса недоступен' }
           return

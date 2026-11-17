@@ -1,16 +1,50 @@
 <script setup>
+import { onMounted, ref, watch } from 'vue'
+import { useEnvironmentsStore } from '../stores/environments.js'
+import { useProjectsStore } from '../stores/projects.js'
 import { useUiStore } from '../stores/ui.js'
+import EnvironmentsDialog from './EnvironmentsDialog.vue'
 
 const ui = useUiStore()
+const projects = useProjectsStore()
+const environments = useEnvironmentsStore()
+const manageVisible = ref(false)
+
+// Список и активный выбор живут по активному проекту.
+onMounted(() => environments.load(projects.activeProjectId))
+watch(
+  () => projects.activeProjectId,
+  (id) => environments.load(id)
+)
+
+function select(event) {
+  environments.setActive(event.target.value === '' ? null : event.target.value)
+}
 </script>
 
 <template>
   <header class="toolbar">
     <div class="toolbar-brand"><span class="brand-accent">Postman</span> Lite</div>
     <div class="toolbar-center">
-      <select class="env-select" disabled title="Окружения появятся в следующем изменении">
-        <option>No Environment</option>
+      <select
+        class="env-select"
+        :value="environments.activeId ?? ''"
+        aria-label="Активное окружение"
+        @change="select"
+      >
+        <option value="">No Environment</option>
+        <option v-for="environment in environments.items" :key="environment.id" :value="environment.id">
+          {{ environment.name }}
+        </option>
       </select>
+      <button
+        class="btn-icon"
+        title="Управление окружениями"
+        aria-label="Управление окружениями"
+        @click="manageVisible = true"
+      >
+        ⚙
+      </button>
     </div>
     <div class="toolbar-right">
       <button
@@ -23,4 +57,5 @@ const ui = useUiStore()
       </button>
     </div>
   </header>
+  <EnvironmentsDialog :visible="manageVisible" @close="manageVisible = false" />
 </template>

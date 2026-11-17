@@ -167,6 +167,54 @@ export async function deleteRequest(projectId, requestId) {
   return next
 }
 
+// --- Окружения проекта ---
+
+export async function listEnvironments(projectId) {
+  const project = await requireProject(projectId)
+  return { environments: project.environments ?? [], activeEnvId: project.activeEnvId ?? null }
+}
+
+// Upsert по id: замена существующей записи на её позиции или добавление в конец списка.
+export async function saveEnvironment(projectId, environment) {
+  const name = String(environment?.name ?? '').trim()
+  if (!name) throw new Error('Имя окружения не может быть пустым')
+  if (!environment.id) throw new Error('У сохраняемого окружения должен быть id')
+  const project = await requireProject(projectId)
+  const stored = {
+    id: String(environment.id),
+    name,
+    variables: environment.variables ?? []
+  }
+  const environments = project.environments ?? []
+  const index = environments.findIndex((e) => e.id === stored.id)
+  if (index === -1) environments.push(stored)
+  else environments[index] = stored
+  await writeJsonAtomic(projectPath(projectId), { ...project, environments })
+  return environments
+}
+
+// Удаление окружения; если удалили активное — activeEnvId обнуляется.
+export async function deleteEnvironment(projectId, environmentId) {
+  const project = await requireProject(projectId)
+  const environments = project.environments ?? []
+  const next = environments.filter((e) => e.id !== environmentId)
+  if (next.length === environments.length) throw new Error(`Окружение не найдено: ${environmentId}`)
+  const activeEnvId = project.activeEnvId === environmentId ? null : project.activeEnvId ?? null
+  await writeJsonAtomic(projectPath(projectId), { ...project, environments: next, activeEnvId })
+  return { environments: next, activeEnvId }
+}
+
+export async function setActiveEnvironment(projectId, environmentId) {
+  const project = await requireProject(projectId)
+  const environments = project.environments ?? []
+  if (environmentId !== null && !environments.some((e) => e.id === environmentId)) {
+    throw new Error(`Окружение не найдено: ${environmentId}`)
+  }
+  const activeEnvId = environmentId
+  await writeJsonAtomic(projectPath(projectId), { ...project, activeEnvId })
+  return { environments, activeEnvId }
+}
+
 // --- Настройки ---
 
 async function readSettingsFromDisk() {
