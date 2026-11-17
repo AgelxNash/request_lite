@@ -1,7 +1,7 @@
 <script setup>
 // Веб-контекстное меню в стиле приложения (нативное Menu.popup не используется).
 // Пункты: {label, disabled?, title?, action?}. Позиционируется у курсора с clamp к краям окна.
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 defineProps({
   items: { type: Array, default: () => [] }
@@ -9,6 +9,7 @@ defineProps({
 
 const visible = ref(false)
 const position = ref({ x: 0, y: 0 })
+const positionStyle = computed(() => ({ left: `${position.value.x}px`, top: `${position.value.y}px` }))
 
 // ~200px ширина и ~34px на пункт — для clamp при открытии у правого/нижнего края.
 function openAt(x, y) {
@@ -52,7 +53,7 @@ defineExpose({ openAt, close })
 </script>
 
 <template>
-  <div v-if="visible" class="context-menu">
+  <div v-if="visible" class="context-menu" :style="positionStyle">
     <button
       v-for="item in items"
       :key="item.label"
