@@ -1,6 +1,8 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
-// (см. src/preload/index.js). Префиксы: projects:*, requests:*, settings:*, data:*, http:*.
-import { clipboard, ipcMain, shell } from 'electron'
+// (см. src/preload/index.js). Префиксы: projects:*, requests:*, environments:*,
+// settings:*, http:*, postman:*, data:*, clipboard:*.
+import { clipboard, dialog, ipcMain, shell } from 'electron'
+import { readFile } from 'node:fs/promises'
 import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
 
@@ -15,6 +17,22 @@ export function registerIpc() {
   ipcMain.handle('projects:rename', (_event, { id, name }) => storage.renameProject(id, name))
   ipcMain.handle('projects:delete', (_event, id) => storage.deleteProject(id))
   ipcMain.handle('projects:setLocked', (_event, { id, locked }) => storage.setProjectLocked(id, locked))
+  ipcMain.handle('projects:importCollection', (_event, payload) => storage.importCollection(payload))
+
+  // Выбор JSON-файла коллекции Postman + чтение содержимого (нативный диалог в main).
+  ipcMain.handle('postman:pickAndRead', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Postman Collection', extensions: ['json'] }]
+    })
+    if (result.canceled || !result.filePaths.length) return { ok: false, cancelled: true }
+    try {
+      const content = await readFile(result.filePaths[0], 'utf8')
+      return { ok: true, content }
+    } catch (err) {
+      return { ok: false, error: `Не удалось прочитать файл: ${err.message}` }
+    }
+  })
 
   ipcMain.handle('requests:list', (_event, projectId) => storage.listRequests(projectId))
   ipcMain.handle('requests:save', (_event, { projectId, request }) => storage.saveRequest(projectId, request))

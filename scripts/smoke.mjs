@@ -13,6 +13,7 @@ const defaults = await import('../src/renderer/src/lib/defaults.js')
 const requestName = await import('../src/renderer/src/lib/request-name.js')
 const variables = await import('../src/renderer/src/lib/variables.js')
 const curl = await import('../src/renderer/src/lib/curl.js')
+const postman = await import('../src/renderer/src/lib/postman.js')
 
 let passed = 0
 
@@ -238,6 +239,163 @@ try {
     const after = await storage.deleteRequest(lockReqProject.id, 'lr-1')
     assert.equal(after.length, 2)
   })
+
+  // --- Postman-импорт: fixture + parseCollection (lib/postman.js) ---
+
+  // Fixture: вложенные папки, все body-режимы, disabled-поля, collection-level auth, переменные.
+  const FIXTURE_COLLECTION = {
+    info: { name: 'API Demo', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+    auth: { type: 'bearer', bearer: [{ key: 'token', value: 't-coll' }] },
+    variable: [
+      { key: 'baseUrl', value: 'http://localhost:4545', disabled: false },
+      { key: 'legacy', value: 'x', disabled: true }
+    ],
+    item: [
+      {
+        name: 'Auth',
+        item: [
+          {
+            name: 'OAuth',
+            item: [
+              {
+                name: 'Token',
+                request: {
+                  method: 'POST',
+                  url: { raw: '{{baseUrl}}/token', query: [{ key: 'mode', value: 'client', disabled: true }] },
+                  header: [{ key: 'Accept', value: 'application/json' }],
+                  body: {
+                    mode: 'urlencoded',
+                    urlencoded: [
+                      { key: 'grant_type', value: 'client_credentials' },
+                      { key: 'skip', value: 'x', disabled: true }
+                    ]
+                  },
+                  auth: { type: 'basic', basic: [{ key: 'username', value: 'user' }, { key: 'password', value: 'pass' }] }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        name: 'JSON echo',
+        request: {
+          method: 'POST',
+          url: '{{baseUrl}}/echo',
+          body: { mode: 'raw', options: { raw: { lang: 'json' } }, raw: '{"a":1}' }
+        }
+      },
+      {
+        name: 'Form',
+        request: {
+          method: 'POST',
+          url: '{{baseUrl}}/form',
+          header: [{ key: 'X-Trace', value: '1', disabled: true }],
+          body: {
+            mode: 'formdata',
+            formdata: [
+              { key: 'note', value: 'hi' },
+              { key: 'doc', type: 'file', src: '/tmp/doc.pdf' }
+            ]
+          }
+        }
+      },
+      {
+        name: 'Raw text',
+        request: { method: 'POST', url: '{{baseUrl}}/text', body: { mode: 'raw', raw: 'просто текст' } }
+      },
+      {
+        name: 'File body',
+        request: { method: 'POST', url: '{{baseUrl}}/file', body: { mode: 'file', file: { src: '/x' } } }
+      },
+      { name: 'No body', request: { method: 'GET', url: '{{baseUrl}}/ping' } }
+    ]
+  }
+
+  await check('parseCollection: типичная коллекция → проект/запросы/переменные', () => {
+    const result = postman.parseCollection(JSON.stringify(FIXTURE_COLLECTION))
+    assert.equal(result.name, 'API Demo')
+    assert.equal(result.requests.length, 6)
+    assert.equal(result.variables.length, 2)
+    assert.equal(result.variables[0].key, 'baseUrl')
+    assert.equal(result.variables[0].enabled, true)
+    assert.equal(result.variables[1].enabled, false, 'выключенная переменная — снятая галочка')
+  })
+
+  await check('parseCollection: папки и вложенность → префиксы « / »', () => {
+    const { requests } = postman.parseCollection(JSON.stringify(FIXTURE_COLLECTION))
+    assert.deepEqual(
+      requests.map((r) => r.name),
+      ['Auth / OAuth / Token', 'JSON echo', 'Form', 'Raw text', 'File body', 'No body']
+    )
+  })
+
+  await check('parseCollection: query/headers с disabled, urlencoded', () => {
+    const { requests } = postman.parseCollection(JSON.stringify(FIXTURE_COLLECTION))
+    const token = requests[0]
+    assert.equal(token.method, 'POST')
+    assert.equal(token.url, '{{baseUrl}}/token')
+    assert.equal(token.params[0].key, 'mode')
+    assert.equal(token.params[0].enabled, false, 'disabled query → снятая галочка')
+    assert.equal(token.headers[0].key, 'Accept')
+    assert.equal(token.headers[0].enabled, true)
+    assert.equal(token.body.type, 'urlencoded')
+    assert.equal(token.body.urlencoded[0].value, 'client_credentials')
+    assert.equal(token.body.urlencoded[1].enabled, false)
+    // собственная basic перекрывает collection-level bearer
+    assert.equal(token.auth.type, 'basic')
+    assert.equal(token.auth.username, 'user')
+  })
+
+  await check('parseCollection: тела raw+json / formdata+file / raw text / file → none', () => {
+    const { requests } = postman.parseCollection(JSON.stringify(FIXTURE_COLLECTION))
+    assert.equal(requests[1].body.type, 'json')
+    assert.equal(requests[1].body.json, '{"a":1}')
+    // наследование: запрос без своего auth получает bearer коллекции
+    assert.equal(requests[1].auth.type, 'bearer')
+    assert.equal(requests[1].auth.token, 't-coll')
+
+    const form = requests[2]
+    assert.equal(form.body.type, 'form-data')
+    assert.equal(form.body.form[0].value, 'hi')
+    assert.equal(form.body.form[1].value, '@/tmp/doc.pdf', 'файл-поле → литерал @src')
+    assert.equal(form.headers[0].enabled, false, 'disabled header → снятая галочка')
+
+    assert.equal(requests[3].body.type, 'text')
+    assert.equal(requests[3].body.text, 'просто текст')
+
+    assert.equal(requests[4].body.type, 'none', 'file-режим → none')
+    assert.equal(requests[5].body.type, 'none')
+    assert.equal(requests[5].method, 'GET')
+  })
+
+    await check('parseCollection: ошибки — не-JSON и не-коллекция', () => {
+      assert.throws(() => postman.parseCollection('{ это не json'), /не является корректным JSON/)
+      assert.throws(() => postman.parseCollection('{"name": "не коллекция"}'), /Не похоже на коллекцию/)
+      assert.throws(() => postman.parseCollection('{"info": {"name": ""}, "item": []}'), /Не похоже на коллекцию/)
+    })
+
+    // --- Postman-импорт: bulk-хранилище (importCollection) ---
+
+    await check('importCollection: проект + запросы + активное окружение одной записью', async () => {
+      const parsed = postman.parseCollection(JSON.stringify(FIXTURE_COLLECTION))
+      const project = await storage.importCollection({
+        name: parsed.name,
+        requests: parsed.requests,
+        variables: parsed.variables
+      })
+      assert.equal(project.name, 'API Demo')
+      const projects = await storage.listProjects()
+      assert.ok(projects.some((p) => p.id === project.id), 'проект в индексе')
+      const onDisk = await storage.getProject(project.id)
+      assert.equal(onDisk.requests.length, 6)
+      assert.equal(onDisk.environments.length, 1)
+      assert.equal(onDisk.environments[0].name, 'API Demo')
+      assert.equal(onDisk.environments[0].variables[0].key, 'baseUrl')
+      assert.equal(onDisk.activeEnvId, onDisk.environments[0].id, 'окружение активно')
+      assert.equal(onDisk.requests[0].name, 'Auth / OAuth / Token')
+      await assert.rejects(() => storage.importCollection({ name: '   ' }), /пустым/)
+    })
 
   // --- Окружения проекта: save/list/setActive/delete ---
   const envProject = await storage.createProject('Хранилище окружений')

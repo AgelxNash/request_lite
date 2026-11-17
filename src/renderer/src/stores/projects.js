@@ -57,6 +57,13 @@ export const useProjectsStore = defineStore('projects', {
         await this.load()
       }
     },
+    // Bulk-импорт коллекции Postman: main создаёт проект, store обновляется из ответа.
+    async importCollection(payload) {
+      const project = await window.api.projects.importCollection(payload)
+      await this.load()
+      this.activeProjectId = project.id
+      return project
+    },
     select(id) {
       this.activeProjectId = id
     }

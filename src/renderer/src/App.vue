@@ -1,5 +1,7 @@
 <script setup>
 import { onMounted, provide, ref } from 'vue'
+import { parseCollection } from './lib/postman.js'
+import { useEnvironmentsStore } from './stores/environments.js'
 import { useProjectsStore } from './stores/projects.js'
 import { useTabsStore } from './stores/tabs.js'
 import Toolbar from './components/Toolbar.vue'
@@ -12,8 +14,29 @@ import CurlImportDialog from './components/CurlImportDialog.vue'
 
 const projects = useProjectsStore()
 const tabs = useTabsStore()
+const environments = useEnvironmentsStore()
 const dialog = ref(null)
 const curlImportVisible = ref(false)
+
+// Импорт коллекции Postman: file picker → парсинг → bulk-импорт в новый проект.
+async function importPostman() {
+  const picked = await window.api.postman.pickAndRead()
+  if (!picked.ok) {
+    if (picked.error) {
+      await dialog.value.alert({ title: 'Импорт коллекции', message: picked.error })
+    }
+    return // отмена выбора файла — ничего не делаем
+  }
+  let parsed
+  try {
+    parsed = parseCollection(picked.content)
+  } catch (err) {
+    await dialog.value.alert({ title: 'Импорт коллекции', message: err?.message ?? 'Не удалось разобрать файл' })
+    return
+  }
+  await projects.importCollection({ name: parsed.name, requests: parsed.requests, variables: parsed.variables })
+  await environments.load(projects.activeProjectId)
+}
 
 // Диалог доступен вложенным компонентам (переименование/удаление проектов в сайдбаре).
 provide('dialog', dialog)
@@ -25,6 +48,7 @@ onMounted(async () => {
     if (action === 'new-project') newProject()
     if (action === 'save-request') tabs.saveActiveViaDialog(dialog.value)
     if (action === 'import-curl') curlImportVisible.value = true
+    if (action === 'import-postman') importPostman()
   })
 })
 

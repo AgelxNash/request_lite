@@ -131,6 +131,47 @@ export async function setProjectLocked(id, locked) {
   return project
 }
 
+// Bulk-импорт коллекции Postman: проект в индексе + файл проекта
+// (requests[] + окружение с именем коллекции + activeEnvId) одной атомарной записью.
+export async function importCollection({ name, requests, variables }) {
+  const trimmed = String(name ?? '').trim()
+  if (!trimmed) throw new Error('Имя проекта не может быть пустым')
+  await ensureDirs()
+  const now = new Date().toISOString()
+  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false }
+  const environment = {
+    id: randomUUID(),
+    name: trimmed,
+    variables: (variables ?? []).map((v) => ({
+      id: String(v.id ?? randomUUID()),
+      key: String(v.key ?? ''),
+      value: String(v.value ?? ''),
+      enabled: v.enabled !== false
+    }))
+  }
+  const records = (requests ?? []).map((r) => ({
+    id: String(r.id ?? randomUUID()),
+    name: String(r.name ?? '').trim() || 'Imported Request',
+    method: r.method ?? 'GET',
+    url: r.url ?? '',
+    params: r.params ?? [],
+    headers: r.headers ?? [],
+    body: r.body ?? { type: 'none' },
+    auth: r.auth ?? { type: 'none' },
+    sslVerify: r.sslVerify !== false,
+    locked: false
+  }))
+  const projects = await listProjects()
+  projects.push(project)
+  await writeJsonAtomic(indexPath(), projects)
+  await writeJsonAtomic(projectPath(project.id), {
+    requests: records,
+    environments: [environment],
+    activeEnvId: environment.id
+  })
+  return project
+}
+
 export async function getProject(id) {
   return readJson(projectPath(id), null)
 }

@@ -13,7 +13,11 @@ const api = {
     create: (name) => ipcRenderer.invoke('projects:create', name),
     rename: (id, name) => ipcRenderer.invoke('projects:rename', { id, name }),
     delete: (id) => ipcRenderer.invoke('projects:delete', id),
-    setLocked: (id, locked) => ipcRenderer.invoke('projects:setLocked', { id, locked })
+    setLocked: (id, locked) => ipcRenderer.invoke('projects:setLocked', { id, locked }),
+    importCollection: (payload) => ipcRenderer.invoke('projects:importCollection', payload)
+  },
+  postman: {
+    pickAndRead: () => ipcRenderer.invoke('postman:pickAndRead')
   },
   requests: {
     list: (projectId) => ipcRenderer.invoke('requests:list', projectId),
@@ -49,6 +53,7 @@ const api = {
     ipcRenderer.on('menu:new-project', () => callback('new-project'))
     ipcRenderer.on('menu:save-request', () => callback('save-request'))
     ipcRenderer.on('menu:import-curl', () => callback('import-curl'))
+    ipcRenderer.on('menu:import-postman', () => callback('import-postman'))
   }
 }
 

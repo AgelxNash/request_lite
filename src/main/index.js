@@ -63,6 +63,10 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+I',
           click: () => mainWindow?.webContents.send('menu:import-curl')
         },
+        {
+          label: 'Импорт коллекции Postman',
+          click: () => mainWindow?.webContents.send('menu:import-postman')
+        },
         { label: 'Open data folder', click: () => openStorageFolder() }
       ]
     },

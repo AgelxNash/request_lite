@@ -24,7 +24,7 @@ function open(nextMode, cfg) {
     label: cfg.label ?? '',
     message: cfg.message ?? '',
     value: cfg.value ?? '',
-    confirmText: cfg.confirmText ?? (nextMode === 'prompt' ? 'ОК' : 'Подтвердить'),
+    confirmText: cfg.confirmText ?? (nextMode === 'alert' ? 'Понятно' : nextMode === 'prompt' ? 'ОК' : 'Подтвердить'),
     danger: cfg.danger ?? nextMode === 'confirm'
   })
   inputValue.value = config.value
@@ -44,7 +44,7 @@ function submit() {
     const value = inputValue.value.trim()
     finish(value === '' ? null : value) // пустое имя = отмена
   } else {
-    finish(true)
+    finish(true) // confirm и alert
   }
 }
 
@@ -62,6 +62,12 @@ defineExpose({
     new Promise((resolve) => {
       resolver = resolve
       open('confirm', cfg)
+    }),
+  // Информационное сообщение с одной кнопкой (ошибки импорта и пр.).
+  alert: (cfg) =>
+    new Promise((resolve) => {
+      resolver = resolve
+      open('alert', cfg)
     })
 })
 </script>
@@ -70,7 +76,7 @@ defineExpose({
   <div v-if="visible" class="dialog-overlay" @mousedown.self="cancel">
     <div class="dialog" role="dialog" :aria-label="config.title">
       <h3 class="dialog-title">{{ config.title }}</h3>
-      <p v-if="mode === 'confirm'" class="dialog-message">{{ config.message }}</p>
+      <p v-if="mode === 'confirm' || mode === 'alert'" class="dialog-message">{{ config.message }}</p>
       <template v-else>
         <label class="dialog-label" for="app-dialog-input">{{ config.label }}</label>
         <input
