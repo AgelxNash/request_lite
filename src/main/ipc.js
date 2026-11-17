@@ -1,7 +1,7 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
 // (см. src/preload/index.js). Префиксы: projects:*, requests:*, environments:*,
 // settings:*, http:*, postman:*, data:*, clipboard:*.
-import { clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { readFile } from 'node:fs/promises'
 import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
@@ -58,6 +58,16 @@ export function registerIpc() {
   ipcMain.handle('clipboard:write', (_event, text) => {
     clipboard.writeText(String(text ?? ''))
     return true
+  })
+
+  // Версия приложения (единый источник — package.json через app.getVersion).
+  ipcMain.handle('app:version', () => app.getVersion())
+
+  // Открытие внешних ссылок: только https — защита от произвольных схем.
+  ipcMain.handle('shell:openExternal', (_event, url) => {
+    const value = String(url ?? '')
+    if (!/^https:\/\//i.test(value)) throw new Error('Разрешены только https-ссылки')
+    return shell.openExternal(value)
   })
 
   ipcMain.handle('settings:get', () => storage.getSettings())

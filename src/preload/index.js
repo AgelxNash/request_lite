@@ -19,6 +19,12 @@ const api = {
   postman: {
     pickAndRead: () => ipcRenderer.invoke('postman:pickAndRead')
   },
+  shell: {
+    openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
+  },
+  app: {
+    version: () => ipcRenderer.invoke('app:version')
+  },
   requests: {
     list: (projectId) => ipcRenderer.invoke('requests:list', projectId),
     save: (projectId, request) => ipcRenderer.invoke('requests:save', { projectId, request }),
@@ -54,6 +60,7 @@ const api = {
     ipcRenderer.on('menu:save-request', () => callback('save-request'))
     ipcRenderer.on('menu:import-curl', () => callback('import-curl'))
     ipcRenderer.on('menu:import-postman', () => callback('import-postman'))
+    ipcRenderer.on('menu:about', () => callback('about'))
   }
 }
 

@@ -40,7 +40,7 @@ function buildMenu() {
       // На macOS первый пункт шаблона всегда становится меню приложения (метка заменяется именем app)
       label: app.name,
       submenu: [
-        { role: 'about', label: 'О приложении' },
+        { label: 'О приложении', click: () => mainWindow?.webContents.send('menu:about') },
         { type: 'separator' },
         { role: 'quit', label: 'Выход' }
       ]

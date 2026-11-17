@@ -480,6 +480,34 @@ select:disabled {
   font-size: 12px;
 }
 
+/* ===== О приложении ===== */
+.about-dialog {
+  width: 420px;
+  text-align: center;
+}
+
+.about-name {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.about-version {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+}
+
+.about-description {
+  margin: 0 0 6px;
+}
+
+.about-author {
+  margin: 0 0 6px;
+}
+
+.about-link {
+  display: inline-block;
+}
+
 /* ===== Импорт/экспорт curl ===== */
 .curl-import-dialog {
   width: 560px;

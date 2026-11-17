@@ -11,12 +11,14 @@ import RequestEditor from './components/RequestEditor.vue'
 import ResponseView from './components/ResponseView.vue'
 import AppDialog from './components/AppDialog.vue'
 import CurlImportDialog from './components/CurlImportDialog.vue'
+import AboutDialog from './components/AboutDialog.vue'
 
 const projects = useProjectsStore()
 const tabs = useTabsStore()
 const environments = useEnvironmentsStore()
 const dialog = ref(null)
 const curlImportVisible = ref(false)
+const aboutVisible = ref(false)
 
 // Импорт коллекции Postman: file picker → парсинг → bulk-импорт в новый проект.
 async function importPostman() {
@@ -49,6 +51,7 @@ onMounted(async () => {
     if (action === 'save-request') tabs.saveActiveViaDialog(dialog.value)
     if (action === 'import-curl') curlImportVisible.value = true
     if (action === 'import-postman') importPostman()
+    if (action === 'about') aboutVisible.value = true
   })
 })
 
@@ -77,5 +80,6 @@ async function newProject() {
     </div>
     <AppDialog ref="dialog" />
     <CurlImportDialog :visible="curlImportVisible" @close="curlImportVisible = false" />
+    <AboutDialog :visible="aboutVisible" @close="aboutVisible = false" />
   </div>
 </template>
