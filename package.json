@@ -9,6 +9,9 @@
     "dev": "ELECTRON_ENABLE_LOGGING=1 electron-vite dev",
     "build": "electron-vite build",
     "dist": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-vite build && electron-builder --mac",
+    "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-vite build && electron-builder --mac",
+    "dist:win": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-vite build && electron-builder --win",
+    "dist:linux": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-vite build && electron-builder --linux",
     "smoke": "node scripts/smoke.mjs"
   },
   "build": {
