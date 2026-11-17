@@ -21,6 +21,9 @@ export function registerIpc() {
   ipcMain.handle('requests:delete', (_event, { projectId, requestId }) =>
     storage.deleteRequest(projectId, requestId)
   )
+  ipcMain.handle('requests:setLocked', (_event, { projectId, requestId, locked }) =>
+    storage.setRequestLocked(projectId, requestId, locked)
+  )
 
   ipcMain.handle('environments:list', (_event, projectId) => storage.listEnvironments(projectId))
   ipcMain.handle('environments:save', (_event, { projectId, environment }) =>

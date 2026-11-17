@@ -156,6 +156,13 @@ export const useTabsStore = defineStore('tabs', {
       const projects = useProjectsStore()
       if (!projects.activeProjectId) return false
       const requests = useRequestsStore()
+      // Дубль-guard: связанный запрос заблокирован → обновление невозможно.
+      if (
+        tab.savedRequestId &&
+        requests.items.find((r) => r.id === tab.savedRequestId)?.locked === true
+      ) {
+        return false
+      }
       let name = tab.name
       if (!tab.savedRequestId) {
         // Подсказка: переименованная вкладка — её имя, иначе имя из URL.

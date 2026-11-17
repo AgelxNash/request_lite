@@ -194,6 +194,51 @@ try {
     assert.equal(onDisk.requests.length, 1)
   })
 
+  // --- Блокировка запроса: setLocked + guard'ы ---
+  const lockReqProject = await storage.createProject('Блокировка запросов')
+  await storage.saveRequest(lockReqProject.id, { id: 'lr-1', name: 'Защищённый запрос' })
+  await storage.saveRequest(lockReqProject.id, { id: 'lr-2', name: 'Обычный запрос' })
+
+  await check('setRequestLocked пишет флаг на диск и валидирует аргументы', async () => {
+    const list = await storage.setRequestLocked(lockReqProject.id, 'lr-1', true)
+    assert.equal(list.find((r) => r.id === 'lr-1').locked, true)
+    assert.equal(list.find((r) => r.id === 'lr-2').locked, false)
+    await assert.rejects(() => storage.setRequestLocked(lockReqProject.id, 'lr-1', 'yes'), /boolean/)
+    await assert.rejects(() => storage.setRequestLocked(lockReqProject.id, 'nope', true), /не найден/)
+  })
+
+  await check('saveRequest отклоняет обновление заблокированного, запись неизменна', async () => {
+    await assert.rejects(
+      () => storage.saveRequest(lockReqProject.id, { id: 'lr-1', name: 'Взломано', url: 'https://evil.test' }),
+      /заблокирован/
+    )
+    const list = await storage.listRequests(lockReqProject.id)
+    const locked = list.find((r) => r.id === 'lr-1')
+    assert.equal(locked.name, 'Защищённый запрос', 'имя не перезаписано')
+    assert.equal(locked.url ?? '', '', 'url не перезаписан')
+    assert.equal(locked.locked, true)
+  })
+
+  await check('saveRequest создаёт новый запрос свободно, даже пока другой заблокирован', async () => {
+    const list = await storage.saveRequest(lockReqProject.id, { id: 'lr-3', name: 'Новый свободный' })
+    assert.equal(list.length, 3)
+    assert.equal(list.find((r) => r.id === 'lr-3').locked, false)
+  })
+
+  await check('deleteRequest отклоняет заблокированный запрос', async () => {
+    await assert.rejects(() => storage.deleteRequest(lockReqProject.id, 'lr-1'), /заблокирован/)
+    const list = await storage.listRequests(lockReqProject.id)
+    assert.equal(list.length, 3, 'запись осталась')
+  })
+
+  await check('после разблокировки save/delete работают', async () => {
+    await storage.setRequestLocked(lockReqProject.id, 'lr-1', false)
+    const list = await storage.saveRequest(lockReqProject.id, { id: 'lr-1', name: 'Изменено свободно' })
+    assert.equal(list.find((r) => r.id === 'lr-1').name, 'Изменено свободно')
+    const after = await storage.deleteRequest(lockReqProject.id, 'lr-1')
+    assert.equal(after.length, 2)
+  })
+
   // --- Окружения проекта: save/list/setActive/delete ---
   const envProject = await storage.createProject('Хранилище окружений')
 

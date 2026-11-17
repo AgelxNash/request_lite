@@ -1,6 +1,7 @@
 <script setup>
 import { computed, inject, ref } from 'vue'
 import { useProjectsStore } from '../stores/projects.js'
+import { useRequestsStore } from '../stores/requests.js'
 import { useTabsStore } from '../stores/tabs.js'
 import { generateCurl } from '../lib/curl.js'
 import { toSnapshot } from '../stores/tabs.js'
@@ -9,6 +10,7 @@ import CurlExportPanel from './CurlExportPanel.vue'
 
 const tabs = useTabsStore()
 const projects = useProjectsStore()
+const requests = useRequestsStore()
 const dialog = inject('dialog')
 
 const contextMenu = ref(null)
@@ -29,11 +31,19 @@ function closeTabMenu() {
 const menuItems = computed(() => {
   const tab = tabs.tabs.find((t) => t.id === menuTabId.value)
   if (!tab) return []
+  // Связанный с кликнутой вкладкой запрос заблокирован → «Сохранить» неактивен.
+  const linkedLocked =
+    !!tab.savedRequestId &&
+    requests.items.find((r) => r.id === tab.savedRequestId)?.locked === true
   return [
     {
       label: 'Сохранить',
-      disabled: tab.sending || !projects.activeProjectId,
-      title: projects.activeProjectId ? '' : 'Выберите активный проект',
+      disabled: tab.sending || !projects.activeProjectId || linkedLocked,
+      title: projects.activeProjectId
+        ? linkedLocked
+          ? 'Запрос заблокирован — разблокируйте, чтобы сохранить'
+          : ''
+        : 'Выберите активный проект',
       action: () => tabs.saveTab(tab.id, dialog.value)
     },
     {

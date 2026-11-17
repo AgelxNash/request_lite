@@ -27,6 +27,12 @@ export const useRequestsStore = defineStore('requests', {
       const projects = useProjectsStore()
       if (!projects.activeProjectId) throw new Error('Нет активного проекта')
       this.items = await window.api.requests.delete(projects.activeProjectId, requestId)
+    },
+    // Блокировка запроса (защита от обновления и удаления). Ответ main — обновлённый список.
+    async setLocked(requestId, locked) {
+      const projects = useProjectsStore()
+      if (!projects.activeProjectId) throw new Error('Нет активного проекта')
+      this.items = await window.api.requests.setLocked(projects.activeProjectId, requestId, locked)
     }
   }
 })

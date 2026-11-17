@@ -1,11 +1,13 @@
 <script setup>
 import { computed, inject, ref } from 'vue'
 import { useProjectsStore } from '../stores/projects.js'
+import { useRequestsStore } from '../stores/requests.js'
 import { useTabsStore } from '../stores/tabs.js'
 import KeyValueTable from './KeyValueTable.vue'
 
 const tabs = useTabsStore()
 const projects = useProjectsStore()
+const requests = useRequestsStore()
 const dialog = inject('dialog')
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const requestTabs = ['Params', 'Headers', 'Body', 'Auth']
@@ -40,10 +42,23 @@ const canSend = computed(() => {
   return !!tab && !tab.sending && tab.url.trim() !== ''
 })
 
+// Связанный с активной вкладкой запрос заблокирован? Save тогда неактивен.
+const linkedLocked = computed(() => {
+  const tab = tabs.activeTab
+  if (!tab?.savedRequestId) return false
+  return requests.items.find((r) => r.id === tab.savedRequestId)?.locked === true
+})
+
+const saveTooltip = computed(() =>
+  linkedLocked.value
+    ? 'Запрос заблокирован — разблокируйте, чтобы сохранить'
+    : 'Сохранить запрос в активный проект'
+)
+
 // Save доступен, когда вкладка не отправляет запрос и есть активный проект.
 const canSave = computed(() => {
   const tab = tabs.activeTab
-  return !!tab && !tab.sending && !!projects.activeProjectId
+  return !!tab && !tab.sending && !!projects.activeProjectId && !linkedLocked.value
 })
 
 function save() {
@@ -84,7 +99,7 @@ function cancel() {
         v-if="!tabs.activeTab.sending"
         class="btn save-request-btn"
         :disabled="!canSave"
-        title="Сохранить запрос в активный проект"
+        :title="saveTooltip"
         aria-label="Сохранить запрос"
         @click="save"
       >

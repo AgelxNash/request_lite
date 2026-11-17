@@ -149,6 +149,8 @@ export async function listRequests(projectId) {
 }
 
 // Upsert по id: замена существующей записи на её позиции или добавление в конец списка.
+// Обновление СУЩЕСТВУЮЩЕГО заблокированного запроса отклоняется (см. setRequestLocked);
+// создание нового запроса (id не из списка) не ограничивается.
 export async function saveRequest(projectId, request) {
   const name = String(request?.name ?? '').trim()
   if (!name) throw new Error('Имя запроса не может быть пустым')
@@ -167,19 +169,40 @@ export async function saveRequest(projectId, request) {
   }
   const requests = project.requests ?? []
   const index = requests.findIndex((r) => r.id === stored.id)
-  if (index === -1) requests.push(stored)
-  else requests[index] = stored
+  if (index === -1) {
+    requests.push({ ...stored, locked: false })
+  } else {
+    // Guard до мутаций: заблокированный запрос нельзя обновить даже минуя UI.
+    if (requests[index].locked === true) throw new Error('Запрос заблокирован')
+    // Флаг блокировки — метаданные записи: не сбрасывается при сохранении содержимого.
+    requests[index] = { ...stored, locked: requests[index].locked === true }
+  }
   await writeJsonAtomic(projectPath(projectId), { ...project, requests })
   return requests
 }
 
+// Удаление заблокированного запроса отклоняется (см. setRequestLocked).
 export async function deleteRequest(projectId, requestId) {
   const project = await requireProject(projectId)
   const requests = project.requests ?? []
+  const existing = requests.find((r) => r.id === requestId)
+  if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
+  if (existing.locked === true) throw new Error('Запрос заблокирован')
   const next = requests.filter((r) => r.id !== requestId)
-  if (next.length === requests.length) throw new Error(`Запрос не найден: ${requestId}`)
   await writeJsonAtomic(projectPath(projectId), { ...project, requests: next })
   return next
+}
+
+// Блокировка запроса (защита от обновления и удаления). Флаг — метаданные записи.
+export async function setRequestLocked(projectId, requestId, locked) {
+  if (typeof locked !== 'boolean') throw new Error('locked должен быть boolean')
+  const project = await requireProject(projectId)
+  const requests = project.requests ?? []
+  const existing = requests.find((r) => r.id === requestId)
+  if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
+  existing.locked = locked
+  await writeJsonAtomic(projectPath(projectId), { ...project, requests })
+  return requests
 }
 
 // --- Окружения проекта ---

@@ -18,7 +18,9 @@ const api = {
   requests: {
     list: (projectId) => ipcRenderer.invoke('requests:list', projectId),
     save: (projectId, request) => ipcRenderer.invoke('requests:save', { projectId, request }),
-    delete: (projectId, requestId) => ipcRenderer.invoke('requests:delete', { projectId, requestId })
+    delete: (projectId, requestId) => ipcRenderer.invoke('requests:delete', { projectId, requestId }),
+    setLocked: (projectId, requestId, locked) =>
+      ipcRenderer.invoke('requests:setLocked', { projectId, requestId, locked })
   },
   environments: {
     list: (projectId) => ipcRenderer.invoke('environments:list', projectId),
