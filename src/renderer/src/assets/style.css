@@ -363,6 +363,23 @@ select:disabled {
   text-overflow: ellipsis;
 }
 
+.tab-dirty {
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.save-request-btn {
+  min-width: 90px;
+}
+
+/* ===== Список запросов в сайдбаре ===== */
+.item-method {
+  min-width: 54px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .tab-close {
   display: inline-flex;
   align-items: center;

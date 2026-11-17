@@ -14,6 +14,11 @@ const api = {
     rename: (id, name) => ipcRenderer.invoke('projects:rename', { id, name }),
     delete: (id) => ipcRenderer.invoke('projects:delete', id)
   },
+  requests: {
+    list: (projectId) => ipcRenderer.invoke('requests:list', projectId),
+    save: (projectId, request) => ipcRenderer.invoke('requests:save', { projectId, request }),
+    delete: (projectId, requestId) => ipcRenderer.invoke('requests:delete', { projectId, requestId })
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch) => ipcRenderer.invoke('settings:set', patch)
@@ -28,6 +33,7 @@ const api = {
   },
   onMenu: (callback) => {
     ipcRenderer.on('menu:new-project', () => callback('new-project'))
+    ipcRenderer.on('menu:save-request', () => callback('save-request'))
   }
 }
 

@@ -21,6 +21,7 @@ onMounted(async () => {
   await projects.load()
   window.api?.onMenu((action) => {
     if (action === 'new-project') newProject()
+    if (action === 'save-request') tabs.saveActiveViaDialog(dialog.value)
   })
 })
 

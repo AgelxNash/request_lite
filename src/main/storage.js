@@ -30,10 +30,20 @@ async function ensureDirs() {
 }
 
 // Атомарная запись: сначала во временный файл, затем rename поверх целевого.
+// Ретрай на EPERM: на Windows rename может упасть, если файл на мгновение держит
+// антивирус или индексатор — повторяем попытку до 3 раз с паузой.
 async function writeJsonAtomic(filePath, data) {
   const tmp = `${filePath}.tmp`
   await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
-  await rename(tmp, filePath)
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(tmp, filePath)
+      return
+    } catch (err) {
+      if (err.code !== 'EPERM' || attempt >= 3) throw err
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
 }
 
 // Чтение JSON с защитой данных: невалидный файл НЕ перезаписывается —
@@ -108,6 +118,53 @@ export async function deleteProject(id) {
 
 export async function getProject(id) {
   return readJson(projectPath(id), null)
+}
+
+// --- Запросы проекта ---
+
+async function requireProject(projectId) {
+  const project = await getProject(projectId)
+  if (!project) throw new Error(`Проект не найден: ${projectId}`)
+  return project
+}
+
+export async function listRequests(projectId) {
+  const project = await requireProject(projectId)
+  return project.requests ?? []
+}
+
+// Upsert по id: замена существующей записи на её позиции или добавление в конец списка.
+export async function saveRequest(projectId, request) {
+  const name = String(request?.name ?? '').trim()
+  if (!name) throw new Error('Имя запроса не может быть пустым')
+  if (!request.id) throw new Error('У сохраняемого запроса должен быть id')
+  const project = await requireProject(projectId)
+  const stored = {
+    id: String(request.id),
+    name,
+    method: request.method ?? 'GET',
+    url: request.url ?? '',
+    params: request.params ?? [],
+    headers: request.headers ?? [],
+    body: request.body ?? { type: 'none' },
+    auth: request.auth ?? { type: 'none' },
+    sslVerify: request.sslVerify !== false
+  }
+  const requests = project.requests ?? []
+  const index = requests.findIndex((r) => r.id === stored.id)
+  if (index === -1) requests.push(stored)
+  else requests[index] = stored
+  await writeJsonAtomic(projectPath(projectId), { ...project, requests })
+  return requests
+}
+
+export async function deleteRequest(projectId, requestId) {
+  const project = await requireProject(projectId)
+  const requests = project.requests ?? []
+  const next = requests.filter((r) => r.id !== requestId)
+  if (next.length === requests.length) throw new Error(`Запрос не найден: ${requestId}`)
+  await writeJsonAtomic(projectPath(projectId), { ...project, requests: next })
+  return next
 }
 
 // --- Настройки ---

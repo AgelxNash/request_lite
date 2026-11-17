@@ -1,5 +1,8 @@
 import { defineStore } from 'pinia'
 import { DEFAULT_HEADERS } from '../lib/defaults.js'
+import { suggestRequestName } from '../lib/request-name.js'
+import { useProjectsStore } from './projects.js'
+import { useRequestsStore } from './requests.js'
 
 let nextTabId = 1
 let nextRowId = 1
@@ -21,6 +24,9 @@ function makeTab() {
     body: { type: 'none', json: '', form: [makeRow()], urlencoded: [makeRow()], text: '' },
     auth: { type: 'none', token: '', username: '', password: '', key: '', value: '', placement: 'header' },
     sslVerify: true,
+    // Связь с сохранённым запросом (id в файле проекта) и признак несохранённых правок.
+    savedRequestId: null,
+    dirty: false,
     // Runtime-состояние (не часть модели запроса): отправка и последний результат.
     sending: false,
     requestId: null,
@@ -29,16 +35,25 @@ function makeTab() {
   }
 }
 
+// Полностью пустые строки (нет ни ключа, ни значения) не попадают в снимок —
+// иначе каждый цикл «сохранить → открыть» добавлял бы по пустой строке.
+function meaningfulRows(rows) {
+  return (rows ?? []).filter(
+    (row) => String(row.key ?? '') !== '' || String(row.value ?? '') !== ''
+  )
+}
+
 // Плоский снимок для IPC: реактивные Proxy не сериализуются через invoke.
 function toSnapshot(tab) {
+  const body = tab.body ?? { type: 'none' }
   return JSON.parse(
     JSON.stringify({
       name: tab.name,
       method: tab.method,
       url: tab.url,
-      params: tab.params,
-      headers: tab.headers,
-      body: tab.body,
+      params: meaningfulRows(tab.params),
+      headers: meaningfulRows(tab.headers),
+      body: { ...body, form: meaningfulRows(body.form), urlencoded: meaningfulRows(body.urlencoded) },
       auth: tab.auth,
       sslVerify: tab.sslVerify
     })
@@ -82,15 +97,78 @@ export const useTabsStore = defineStore('tabs', {
     },
     updateActive(patch) {
       const tab = this.activeTab
-      if (tab) Object.assign(tab, patch)
+      if (tab) {
+        Object.assign(tab, patch)
+        tab.dirty = true
+      }
     },
     updateActiveBody(patch) {
       const tab = this.activeTab
-      if (tab) Object.assign(tab.body, patch)
+      if (tab) {
+        Object.assign(tab.body, patch)
+        tab.dirty = true
+      }
     },
     updateActiveAuth(patch) {
       const tab = this.activeTab
-      if (tab) Object.assign(tab.auth, patch)
+      if (tab) {
+        Object.assign(tab.auth, patch)
+        tab.dirty = true
+      }
+    },
+    // Открывает сохранённый запрос в новой вкладке: снимок + связь с сохранённым.
+    openSaved(request) {
+      const tab = makeTab()
+      const cloneRows = (rows) => (rows ?? []).map((row) => ({ ...row }))
+      Object.assign(tab, {
+        name: request.name,
+        method: request.method ?? 'GET',
+        url: request.url ?? '',
+        params: [...cloneRows(request.params), makeRow()],
+        headers: [...cloneRows(request.headers), makeRow()],
+        body: JSON.parse(JSON.stringify(request.body ?? { type: 'none' })),
+        auth: { type: 'none', ...(request.auth ?? {}) },
+        sslVerify: request.sslVerify !== false,
+        savedRequestId: request.id
+      })
+      this.tabs.push(tab)
+      this.activeTabId = tab.id
+      return tab
+    },
+    // Сохранение активной вкладки в активный проект. При первом сохранении запрашивает
+    // имя (диалог с подсказкой из URL), повторное обновляет связанный запрос молча.
+    async saveActiveViaDialog(dialog) {
+      const tab = this.activeTab
+      if (!tab || tab.sending) return false
+      const projects = useProjectsStore()
+      if (!projects.activeProjectId) return false
+      const requests = useRequestsStore()
+      let name = tab.name
+      if (!tab.savedRequestId) {
+        const entered = await dialog.prompt({
+          title: 'Сохранить запрос',
+          label: 'Имя запроса',
+          value: suggestRequestName(tab.url) || 'Untitled Request',
+          confirmText: 'Сохранить'
+        })
+        if (!entered) return false // отмена или пустое имя
+        name = entered.trim() || 'Untitled Request'
+      }
+      const request = { id: tab.savedRequestId ?? crypto.randomUUID(), ...toSnapshot(tab), name }
+      requests.items = await window.api.requests.save(projects.activeProjectId, request)
+      tab.savedRequestId = request.id
+      tab.name = name
+      tab.dirty = false
+      return true
+    },
+    // Отвязывает вкладки от удалённого запроса: содержимое остаётся, связь исчезает.
+    detachSaved(requestId) {
+      for (const tab of this.tabs) {
+        if (tab.savedRequestId === requestId) {
+          tab.savedRequestId = null
+          tab.dirty = false
+        }
+      }
     },
     // Отправка активного запроса; ответ привязывается к вкладке (не к активной).
     async sendActive() {

@@ -1,6 +1,7 @@
 <script setup>
 import { useProjectsStore } from '../stores/projects.js'
 import ProjectList from './ProjectList.vue'
+import RequestList from './RequestList.vue'
 
 defineEmits(['new-project'])
 const projects = useProjectsStore()
@@ -21,5 +22,6 @@ const projects = useProjectsStore()
       <button class="link-btn" @click="$emit('new-project')">+ New Project</button>
     </p>
     <ProjectList v-else @new-project="$emit('new-project')" />
+    <RequestList v-if="projects.activeProjectId" />
   </aside>
 </template>

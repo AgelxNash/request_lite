@@ -17,6 +17,7 @@ const tabs = useTabsStore()
       >
         <span class="tab-method" :class="`method-${tab.method}`">{{ tab.method }}</span>
         <span class="tab-name">{{ tab.name }}</span>
+        <span v-if="tab.dirty" class="tab-dirty" title="Есть несохранённые изменения">•</span>
         <span
           class="tab-close"
           role="button"

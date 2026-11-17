@@ -10,6 +10,7 @@ const storage = await import('../src/main/storage.js')
 const http = await import('../src/main/http.js')
 const format = await import('../src/renderer/src/lib/format.js')
 const defaults = await import('../src/renderer/src/lib/defaults.js')
+const requestName = await import('../src/renderer/src/lib/request-name.js')
 
 let passed = 0
 
@@ -99,6 +100,57 @@ try {
 
   await check('deleteProject неизвестного id отклоняется', async () => {
     await assert.rejects(() => storage.deleteProject('no-such-id'), /не найден/)
+  })
+
+  // --- Запросы проекта: save/list/delete ---
+  const requestsProject = await storage.createProject('Хранилище запросов')
+  const fullRequest = {
+    id: 'req-1',
+    name: 'Users',
+    method: 'POST',
+    url: 'https://api.example.com/users',
+    params: [{ id: 'p1', key: 'page', value: '2', enabled: true }],
+    headers: [{ id: 'h1', key: 'Accept', value: 'application/json', enabled: true }],
+    body: { type: 'json', json: '{"limit":5}' },
+    auth: { type: 'bearer', token: 't-123' },
+    sslVerify: false
+  }
+
+  await check('saveRequest добавляет запрос в requests[] и пишет на диск', async () => {
+    const list = await storage.saveRequest(requestsProject.id, fullRequest)
+    assert.equal(list.length, 1)
+    assert.equal(list[0].name, 'Users')
+    const onDisk = await storage.getProject(requestsProject.id)
+    assert.equal(onDisk.requests.length, 1)
+    assert.equal(onDisk.requests[0].body.json, '{"limit":5}')
+    assert.equal(onDisk.requests[0].sslVerify, false)
+  })
+
+  await check('saveRequest с тем же id обновляет запись на её позиции (upsert)', async () => {
+    await storage.saveRequest(requestsProject.id, { id: 'req-2', name: 'Token' })
+    const list = await storage.saveRequest(requestsProject.id, {
+      ...fullRequest,
+      name: 'Users v2',
+      url: 'https://api.example.com/v2'
+    })
+    assert.equal(list.length, 2)
+    assert.equal(list[0].name, 'Users v2', 'позиция сохранена')
+    assert.equal(list[0].url, 'https://api.example.com/v2')
+    assert.equal(list[1].name, 'Token')
+  })
+
+  await check('saveRequest отклоняет пустое имя и запрос без id', async () => {
+    await assert.rejects(() => storage.saveRequest(requestsProject.id, { id: 'req-3', name: '   ' }), /пустым/)
+    await assert.rejects(() => storage.saveRequest(requestsProject.id, { name: 'NoId' }), /должен быть id/)
+  })
+
+  await check('deleteRequest убирает запрос, остальные остаются; неизвестный id отклоняется', async () => {
+    const list = await storage.deleteRequest(requestsProject.id, 'req-1')
+    assert.equal(list.length, 1)
+    assert.equal(list[0].id, 'req-2')
+    await assert.rejects(() => storage.deleteRequest(requestsProject.id, 'req-1'), /не найден/)
+    const onDisk = await storage.getProject(requestsProject.id)
+    assert.equal(onDisk.requests.length, 1)
   })
 
   // --- Невалидный JSON не затирается ---
@@ -462,6 +514,14 @@ try {
       // Ровно одно значение — undici не добавил своё */* рядом с нашим Accept.
       assert.equal(echo.headers['accept'], 'application/json')
       assert.equal(echo.headers['accept-language'], 'ru-RU,ru;q=0.9')
+    })
+
+    await check('suggestRequestName: сегмент пути, hostname, невалидный URL', () => {
+      assert.equal(requestName.suggestRequestName('https://example.com/api/users'), 'users')
+      assert.equal(requestName.suggestRequestName('https://example.com/users?page=2'), 'users')
+      assert.equal(requestName.suggestRequestName('https://example.com'), 'example.com')
+      assert.equal(requestName.suggestRequestName('не URL'), '')
+      assert.equal(requestName.suggestRequestName(''), '')
     })
   } finally {
     await closeServer()

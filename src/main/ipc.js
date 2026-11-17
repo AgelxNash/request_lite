@@ -1,5 +1,5 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
-// (см. src/preload/index.js). Префиксы: projects:*, settings:*, data:*, http:*.
+// (см. src/preload/index.js). Префиксы: projects:*, requests:*, settings:*, data:*, http:*.
 import { ipcMain, shell } from 'electron'
 import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
@@ -14,6 +14,12 @@ export function registerIpc() {
   ipcMain.handle('projects:create', (_event, name) => storage.createProject(name))
   ipcMain.handle('projects:rename', (_event, { id, name }) => storage.renameProject(id, name))
   ipcMain.handle('projects:delete', (_event, id) => storage.deleteProject(id))
+
+  ipcMain.handle('requests:list', (_event, projectId) => storage.listRequests(projectId))
+  ipcMain.handle('requests:save', (_event, { projectId, request }) => storage.saveRequest(projectId, request))
+  ipcMain.handle('requests:delete', (_event, { projectId, requestId }) =>
+    storage.deleteRequest(projectId, requestId)
+  )
 
   ipcMain.handle('settings:get', () => storage.getSettings())
   ipcMain.handle('settings:set', (_event, patch) => storage.setSettings(patch))

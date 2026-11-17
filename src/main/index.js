@@ -53,6 +53,11 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+N',
           click: () => mainWindow?.webContents.send('menu:new-project')
         },
+        {
+          label: 'Save Request',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => mainWindow?.webContents.send('menu:save-request')
+        },
         { label: 'Open data folder', click: () => openStorageFolder() }
       ]
     },
