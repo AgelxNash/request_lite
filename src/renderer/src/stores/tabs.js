@@ -135,24 +135,31 @@ export const useTabsStore = defineStore('tabs', {
       this.activeTabId = tab.id
       return tab
     },
-    // Сохранение активной вкладки в активный проект. При первом сохранении запрашивает
-    // имя (диалог с подсказкой из URL), повторное обновляет связанный запрос молча.
+    // Сохранение активной вкладки (обёртка для кнопки Save и меню CmdOrCtrl+S).
     async saveActiveViaDialog(dialog) {
-      const tab = this.activeTab
+      return this.saveTab(this.activeTabId, dialog)
+    },
+    // Сохранение конкретной вкладки в активный проект. При первом сохранении
+    // запрашивает имя (диалог с подсказкой), повторное обновляет связанный запрос молча.
+    async saveTab(id, dialog) {
+      const tab = this.tabs.find((t) => t.id === id)
       if (!tab || tab.sending) return false
       const projects = useProjectsStore()
       if (!projects.activeProjectId) return false
       const requests = useRequestsStore()
       let name = tab.name
       if (!tab.savedRequestId) {
+        // Подсказка: переименованная вкладка — её имя, иначе имя из URL.
+        const suggested =
+          tab.name !== 'Untitled Request' ? tab.name : suggestRequestName(tab.url) || 'Untitled Request'
         const entered = await dialog.prompt({
           title: 'Сохранить запрос',
           label: 'Имя запроса',
-          value: suggestRequestName(tab.url) || 'Untitled Request',
+          value: suggested,
           confirmText: 'Сохранить'
         })
         if (!entered) return false // отмена или пустое имя
-        name = entered.trim() || 'Untitled Request'
+        name = entered.trim() || suggested
       }
       const request = { id: tab.savedRequestId ?? crypto.randomUUID(), ...toSnapshot(tab), name }
       requests.items = await window.api.requests.save(projects.activeProjectId, request)
@@ -160,6 +167,30 @@ export const useTabsStore = defineStore('tabs', {
       tab.name = name
       tab.dirty = false
       return true
+    },
+    // Клон вкладки: копия содержимого без связи с сохранённым запросом.
+    // Первый Save клона создаёт новый запрос (upsert по savedRequestId: null).
+    cloneTab(id) {
+      const source = this.tabs.find((t) => t.id === id)
+      if (!source) return null
+      const snapshot = toSnapshot(source)
+      const cloneRows = (rows) => (rows ?? []).map((row) => ({ ...row }))
+      const tab = makeTab()
+      Object.assign(tab, {
+        name: `${snapshot.name} (копия)`,
+        method: snapshot.method,
+        url: snapshot.url,
+        params: [...cloneRows(snapshot.params), makeRow()],
+        headers: [...cloneRows(snapshot.headers), makeRow()],
+        body: JSON.parse(JSON.stringify(snapshot.body)),
+        auth: { type: 'none', ...snapshot.auth },
+        sslVerify: snapshot.sslVerify !== false,
+        savedRequestId: null,
+        dirty: false
+      })
+      this.tabs.push(tab)
+      this.activeTabId = tab.id
+      return tab
     },
     // Отвязывает вкладки от удалённого запроса: содержимое остаётся, связь исчезает.
     detachSaved(requestId) {
