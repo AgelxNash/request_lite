@@ -1,6 +1,7 @@
 <script setup>
 // Диалог импорта запроса из команды curl: textarea + парсинг → новая вкладка.
-import { ref, watch } from 'vue'
+// Esc закрывает; Enter в textarea остаётся переносом строки (paste-многострочного curl).
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { parseCurl } from '../lib/curl.js'
 import { useTabsStore } from '../stores/tabs.js'
 
@@ -12,6 +13,15 @@ const emit = defineEmits(['close'])
 const tabs = useTabsStore()
 const command = ref('')
 const error = ref(null)
+
+function onDocumentKeydown(event) {
+  if (!props.visible || event.key !== 'Escape') return
+  event.preventDefault()
+  emit('close')
+}
+
+onMounted(() => document.addEventListener('keydown', onDocumentKeydown))
+onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown))
 
 watch(
   () => props.visible,
@@ -45,7 +55,6 @@ function submit() {
         rows="7"
         spellcheck="false"
         placeholder="curl -X POST 'https://api.example.com' -H 'Content-Type: application/json' -d '{...}'"
-        @keydown.esc.prevent="emit('close')"
       ></textarea>
       <p v-if="error" class="curl-import-error">{{ error }}</p>
       <div class="dialog-actions">

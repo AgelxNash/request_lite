@@ -1,8 +1,9 @@
 <script setup>
-import { reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 // Собственный модальный диалог: window.prompt/confirm недоступны в Electron.
-// Два режима: prompt (ввод текста: create/rename) и confirm (подтверждение: delete).
+// Режимы: prompt (ввод текста), confirm (подтверждение), alert (сообщение).
+// Enter — согласие, Esc — отмена, на уровне документа (фокус может быть где угодно).
 const visible = ref(false)
 const mode = ref('prompt')
 const config = reactive({
@@ -52,7 +53,24 @@ function cancel() {
   finish(mode.value === 'prompt' ? null : false)
 }
 
+// Enter/Esc на уровне документа: диалог может быть открыт при фокусе где угодно.
+// finish() обнуляет resolver — двойной вызов (input + document) безопасен.
+function onDocumentKeydown(event) {
+  if (!visible.value) return
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    submit()
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    cancel()
+  }
+}
+
+onMounted(() => document.addEventListener('keydown', onDocumentKeydown))
+onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown))
+
 defineExpose({
+  visible, // чужим Esc-обработчикам: AppDialog открыт — Esc достаётся ему
   prompt: (cfg) =>
     new Promise((resolve) => {
       resolver = resolve
@@ -86,12 +104,10 @@ defineExpose({
           class="dialog-input"
           type="text"
           spellcheck="false"
-          @keydown.enter.prevent="submit"
-          @keydown.esc.prevent="cancel"
         />
       </template>
       <div class="dialog-actions">
-        <button class="btn" @click="cancel">Отмена</button>
+        <button v-if="mode !== 'alert'" class="btn" @click="cancel">Отмена</button>
         <button
           class="btn"
           :class="mode === 'confirm' ? 'btn-danger' : 'btn-primary'"

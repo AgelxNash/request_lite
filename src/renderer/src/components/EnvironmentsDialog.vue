@@ -1,7 +1,8 @@
 <script setup>
 // Диалог управления окружениями активного проекта:
 // слева — список (создать/удалить), справа — редактор (имя + KV-таблица переменных).
-import { computed, inject, ref, watch } from 'vue'
+// Esc закрывает, но не при открытом вложенном AppDialog (там Esc — его отмена).
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEnvironmentsStore } from '../stores/environments.js'
 import { useProjectsStore } from '../stores/projects.js'
 import KeyValueTable from './KeyValueTable.vue'
@@ -18,6 +19,17 @@ const dialog = inject('dialog')
 const selectedId = ref(null)
 // Локальная копия редактируемого окружения — сохраняется по кнопке.
 const editing = ref(null)
+
+// Esc — закрыть менеджер, если поверх не открыт вложенный AppDialog (его Esc — его отмена).
+function onDocumentKeydown(event) {
+  if (!props.visible || event.key !== 'Escape') return
+  if (dialog.value?.visible) return
+  event.preventDefault()
+  emit('close')
+}
+
+onMounted(() => document.addEventListener('keydown', onDocumentKeydown))
+onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown))
 
 const selectedEnv = computed(() => environments.items.find((e) => e.id === selectedId.value) ?? null)
 
