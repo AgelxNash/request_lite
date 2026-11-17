@@ -12,6 +12,7 @@ const format = await import('../src/renderer/src/lib/format.js')
 const defaults = await import('../src/renderer/src/lib/defaults.js')
 const requestName = await import('../src/renderer/src/lib/request-name.js')
 const variables = await import('../src/renderer/src/lib/variables.js')
+const curl = await import('../src/renderer/src/lib/curl.js')
 
 let passed = 0
 
@@ -620,6 +621,181 @@ try {
       )
       assert.equal(urlencoded.body.urlencoded[0].key, 'fieldX')
       assert.equal(urlencoded.body.urlencoded[0].value, 'valY')
+    })
+
+    // --- curl: парсер (lib/curl.js) ---
+
+    await check('parseCurl: типичная команда -X/-H/-d json', () => {
+      const snapshot = curl.parseCurl(
+        `curl -X POST 'https://api.example.com/users' -H 'Authorization: Bearer t-1' -H 'Content-Type: application/json' -d '{"name":"Ann"}'`
+      )
+      assert.equal(snapshot.method, 'POST')
+      assert.equal(snapshot.url, 'https://api.example.com/users')
+      assert.equal(snapshot.headers.length, 2)
+      assert.equal(snapshot.headers[0].key, 'Authorization')
+      assert.equal(snapshot.headers[0].value, 'Bearer t-1')
+      assert.equal(snapshot.body.type, 'json')
+      assert.equal(snapshot.body.json, '{"name":"Ann"}')
+    })
+
+    await check('parseCurl: двойные кавычки с экранированием и многострочный перенос', () => {
+      const snapshot = curl.parseCurl(
+        'curl "https://api.example.com/x" \\\n  -H "X-Note: \\"quoted\\"" \\\n  -d \'plain\''
+      )
+      assert.equal(snapshot.url, 'https://api.example.com/x')
+      const note = snapshot.headers.find((h) => h.key === 'X-Note')
+      assert.equal(note.value, '"quoted"')
+      assert.equal(snapshot.method, 'POST')
+    })
+
+    await check('parseCurl: -d без метода даёт POST, Content-Type по умолчанию curl', () => {
+      const snapshot = curl.parseCurl(`curl https://api.example.com -d 'a=1&b=2'`)
+      assert.equal(snapshot.method, 'POST')
+      assert.equal(snapshot.body.type, 'text')
+      assert.equal(snapshot.body.text, 'a=1&b=2')
+      const ct = snapshot.headers.find((h) => h.key === 'Content-Type')
+      assert.equal(ct.value, 'application/x-www-form-urlencoded')
+    })
+
+    await check('parseCurl: -u → basic, -b → Cookie', () => {
+      const snapshot = curl.parseCurl(`curl -u user:pass -b 'k=v' https://api.example.com`)
+      assert.equal(snapshot.auth.type, 'basic')
+      assert.equal(snapshot.auth.username, 'user')
+      assert.equal(snapshot.auth.password, 'pass')
+      const cookie = snapshot.headers.find((h) => h.key === 'Cookie')
+      assert.equal(cookie.value, 'k=v')
+    })
+
+    await check('parseCurl: -G переносит -d в query-параметры', () => {
+      const snapshot = curl.parseCurl(`curl -G https://api.example.com -d 'page=2' -d 'limit=10'`)
+      assert.equal(snapshot.method, 'GET')
+      assert.equal(snapshot.body.type, 'none')
+      assert.equal(snapshot.params.length, 2)
+      assert.equal(snapshot.params[0].key, 'page')
+      assert.equal(snapshot.params[1].value, '10')
+    })
+
+    await check('parseCurl: слитные формы -XPOST и --request=POST', () => {
+      assert.equal(curl.parseCurl(`curl -XPOST https://x.test`).method, 'POST')
+      assert.equal(curl.parseCurl(`curl --request=POST https://x.test`).method, 'POST')
+    })
+
+    await check('parseCurl: ошибка без URL и --json → тело json', () => {
+      assert.throws(() => curl.parseCurl(`curl -X GET`), /не найден URL/)
+      const json = curl.parseCurl(`curl --json '{"a":1}' https://x.test`)
+      assert.equal(json.body.type, 'json')
+      assert.equal(json.body.json, '{"a":1}')
+      const ct = json.headers.find((h) => h.key === 'Content-Type')
+      assert.equal(ct.value, 'application/json')
+    })
+
+    // --- curl: генератор ---
+
+    await check('generateCurl: auth+тело, basic, экранирование, {{var}} литерально', () => {
+      const command = curl.generateCurl({
+        method: 'POST',
+        url: '{{baseUrl}}/users',
+        params: [{ id: 'p1', key: 'page', value: '2', enabled: true }],
+        headers: [{ id: 'h1', key: 'X-Note', value: `it's fine`, enabled: true }],
+        body: { type: 'json', json: '{"name":"Ann"}', form: [], urlencoded: [], text: '' },
+        auth: { type: 'bearer', token: 't-1' },
+        sslVerify: true
+      })
+      assert.ok(command.includes(`-X POST`))
+      assert.ok(command.includes(`'{{baseUrl}}/users?page=2'`), 'params в URL, {{var}} литерально')
+      assert.ok(command.includes(`-H 'Authorization: Bearer t-1'`))
+      assert.ok(command.includes(`-H 'Content-Type: application/json'`))
+      assert.ok(command.includes(`-d '{"name":"Ann"}'`))
+      assert.ok(command.includes(`'X-Note: it'\\''s fine'`), 'экранирование одинарной кавычки')
+
+      const basic = curl.generateCurl({
+        method: 'GET',
+        url: 'https://x.test',
+        params: [],
+        headers: [],
+        body: { type: 'none' },
+        auth: { type: 'basic', username: 'user', password: 'p@ss' },
+        sslVerify: true
+      })
+      assert.ok(basic.includes(`-u 'user:p@ss'`))
+      assert.ok(!basic.includes('-X'), 'GET без -X')
+    })
+
+    await check('generateCurl: urlencoded → --data-urlencode, form-data → -F, GET без тела', () => {
+      const urlencoded = curl.generateCurl({
+        method: 'POST',
+        url: 'https://x.test/token',
+        params: [],
+        headers: [],
+        body: { type: 'urlencoded', json: '', form: [], text: '', urlencoded: [
+          { id: 'u1', key: 'grant_type', value: 'client_credentials', enabled: true },
+          { id: 'u2', key: 'skip', value: 'x', enabled: false }
+        ] },
+        auth: { type: 'none' },
+        sslVerify: true
+      })
+      assert.ok(urlencoded.includes(`--data-urlencode 'grant_type=client_credentials'`))
+      assert.ok(!urlencoded.includes('skip'))
+
+      const form = curl.generateCurl({
+        method: 'POST',
+        url: 'https://x.test',
+        params: [],
+        headers: [],
+        body: { type: 'form-data', json: '', text: '', urlencoded: [], form: [
+          { id: 'f1', key: 'field1', value: 'value1', enabled: true }
+        ] },
+        auth: { type: 'none' },
+        sslVerify: true
+      })
+      assert.ok(form.includes(`-F 'field1=value1'`))
+
+      const getWithBody = curl.generateCurl({
+        method: 'GET',
+        url: 'https://x.test',
+        params: [],
+        headers: [],
+        body: { type: 'json', json: '{"x":1}', form: [], urlencoded: [], text: '' },
+        auth: { type: 'none' },
+        sslVerify: true
+      })
+      assert.ok(!getWithBody.includes('-d'), 'GET не несёт тела')
+    })
+
+    await check('curl round-trip: parse(generate(snapshot)) воспроизводит запрос', () => {
+      const original = {
+        name: 'Demo',
+        method: 'POST',
+        url: 'https://api.example.com/token?page=2',
+        params: [{ id: 'p1', key: 'page', value: '2', enabled: true }],
+        headers: [
+          { id: 'h1', key: 'X-Trace', value: 'abc', enabled: true },
+          { id: 'h2', key: 'X-Skip', value: 'no', enabled: false }
+        ],
+        body: { type: 'urlencoded', json: '', form: [], text: '', urlencoded: [
+          { id: 'u1', key: 'grant_type', value: 'client_credentials', enabled: true },
+          { id: 'u2', key: 'client_id', value: 'ab c&d', enabled: true }
+        ] },
+        auth: { type: 'basic', username: 'user', password: 'pass word' },
+        sslVerify: true
+      }
+      const command = curl.generateCurl(original)
+      const parsed = curl.parseCurl(command)
+      assert.equal(parsed.method, 'POST')
+      // Эффективный URL: оригинал отправлял бы query из URL + params таблицы (дубль page=2);
+      // после round-trip параметры живут в URL — эффективный запрос тот же.
+      assert.equal(parsed.url, 'https://api.example.com/token?page=2&page=2', 'эффективный URL сохранён')
+      assert.equal(parsed.params.length, 0, 'params переехали в URL при re-import')
+      const trace = parsed.headers.find((h) => h.key === 'X-Trace')
+      assert.equal(trace.value, 'abc')
+      assert.ok(!parsed.headers.some((h) => h.key === 'X-Skip'), 'выключенный заголовок не экспортируется')
+      assert.equal(parsed.body.type, 'urlencoded')
+      const grant = parsed.body.urlencoded.find((r) => r.key === 'grant_type')
+      assert.equal(grant.value, 'client_credentials')
+      const clientId = parsed.body.urlencoded.find((r) => r.key === 'client_id')
+      assert.equal(clientId.value, 'ab c&d', '--data-urlencode ↔ URLSearchParams кодирование согласовано')
+      assert.equal(parsed.auth.type, 'basic')
+      assert.equal(parsed.auth.password, 'pass word')
     })
   } finally {
     await closeServer()

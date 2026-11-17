@@ -2,7 +2,10 @@
 import { computed, inject, ref } from 'vue'
 import { useProjectsStore } from '../stores/projects.js'
 import { useTabsStore } from '../stores/tabs.js'
+import { generateCurl } from '../lib/curl.js'
+import { toSnapshot } from '../stores/tabs.js'
 import ContextMenu from './ContextMenu.vue'
+import CurlExportPanel from './CurlExportPanel.vue'
 
 const tabs = useTabsStore()
 const projects = useProjectsStore()
@@ -10,6 +13,8 @@ const dialog = inject('dialog')
 
 const contextMenu = ref(null)
 const menuTabId = ref(null)
+const curlPanelVisible = ref(false)
+const curlPanelText = ref('')
 
 // Меню таргетит кликнутую вкладку (не обязательно активную).
 function openTabMenu(tab, event) {
@@ -34,6 +39,13 @@ const menuItems = computed(() => {
     {
       label: 'Клонировать',
       action: () => tabs.cloneTab(tab.id)
+    },
+    {
+      label: 'Копировать как cURL',
+      action: () => {
+        curlPanelText.value = generateCurl(toSnapshot(tab))
+        curlPanelVisible.value = true
+      }
     }
   ]
 })
@@ -69,5 +81,6 @@ const menuItems = computed(() => {
       </button>
     </div>
     <ContextMenu ref="contextMenu" :items="menuItems" @close="closeTabMenu" />
+    <CurlExportPanel :visible="curlPanelVisible" :text="curlPanelText" @close="curlPanelVisible = false" />
   </div>
 </template>

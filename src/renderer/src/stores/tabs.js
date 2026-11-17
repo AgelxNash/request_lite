@@ -46,7 +46,8 @@ function meaningfulRows(rows) {
 }
 
 // Плоский снимок для IPC: реактивные Proxy не сериализуются через invoke.
-function toSnapshot(tab) {
+// Экспортируется для экспорта curl (тот же снимок, что уходит при сохранении/отправке).
+export function toSnapshot(tab) {
   const body = tab.body ?? { type: 'none' }
   return JSON.parse(
     JSON.stringify({
@@ -120,18 +121,24 @@ export const useTabsStore = defineStore('tabs', {
     },
     // Открывает сохранённый запрос в новой вкладке: снимок + связь с сохранённым.
     openSaved(request) {
+      return this.openTabFromSnapshot(request, request.name, request.id)
+    },
+    // Новая вкладка из снимка (импорт curl, открытие сохранённого). runtime сброшен.
+    openTabFromSnapshot(snapshot, name = '', savedRequestId = null) {
       const tab = makeTab()
       const cloneRows = (rows) => (rows ?? []).map((row) => ({ ...row }))
       Object.assign(tab, {
-        name: request.name,
-        method: request.method ?? 'GET',
-        url: request.url ?? '',
-        params: [...cloneRows(request.params), makeRow()],
-        headers: [...cloneRows(request.headers), makeRow()],
-        body: JSON.parse(JSON.stringify(request.body ?? { type: 'none' })),
-        auth: { type: 'none', ...(request.auth ?? {}) },
-        sslVerify: request.sslVerify !== false,
-        savedRequestId: request.id
+        name: name || suggestRequestName(snapshot.url) || 'Imported Request',
+        method: snapshot.method ?? 'GET',
+        url: snapshot.url ?? '',
+        params: [...cloneRows(snapshot.params), makeRow()],
+        headers: [...cloneRows(snapshot.headers), makeRow()],
+        body: JSON.parse(
+          JSON.stringify(snapshot.body ?? { type: 'none', json: '', form: [], urlencoded: [], text: '' })
+        ),
+        auth: { type: 'none', ...(snapshot.auth ?? {}) },
+        sslVerify: snapshot.sslVerify !== false,
+        savedRequestId
       })
       this.tabs.push(tab)
       this.activeTabId = tab.id

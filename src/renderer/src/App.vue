@@ -8,10 +8,12 @@ import RequestTabs from './components/RequestTabs.vue'
 import RequestEditor from './components/RequestEditor.vue'
 import ResponseView from './components/ResponseView.vue'
 import AppDialog from './components/AppDialog.vue'
+import CurlImportDialog from './components/CurlImportDialog.vue'
 
 const projects = useProjectsStore()
 const tabs = useTabsStore()
 const dialog = ref(null)
+const curlImportVisible = ref(false)
 
 // Диалог доступен вложенным компонентам (переименование/удаление проектов в сайдбаре).
 provide('dialog', dialog)
@@ -22,6 +24,7 @@ onMounted(async () => {
   window.api?.onMenu((action) => {
     if (action === 'new-project') newProject()
     if (action === 'save-request') tabs.saveActiveViaDialog(dialog.value)
+    if (action === 'import-curl') curlImportVisible.value = true
   })
 })
 
@@ -49,5 +52,6 @@ async function newProject() {
       </main>
     </div>
     <AppDialog ref="dialog" />
+    <CurlImportDialog :visible="curlImportVisible" @close="curlImportVisible = false" />
   </div>
 </template>

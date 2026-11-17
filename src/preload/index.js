@@ -27,6 +27,9 @@ const api = {
     setActive: (projectId, environmentId) =>
       ipcRenderer.invoke('environments:setActive', { projectId, environmentId })
   },
+  clipboard: {
+    write: (text) => ipcRenderer.invoke('clipboard:write', text)
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch) => ipcRenderer.invoke('settings:set', patch)
@@ -42,6 +45,7 @@ const api = {
   onMenu: (callback) => {
     ipcRenderer.on('menu:new-project', () => callback('new-project'))
     ipcRenderer.on('menu:save-request', () => callback('save-request'))
+    ipcRenderer.on('menu:import-curl', () => callback('import-curl'))
   }
 }
 

@@ -58,6 +58,11 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+S',
           click: () => mainWindow?.webContents.send('menu:save-request')
         },
+        {
+          label: 'Вставить запрос из cURL',
+          accelerator: 'CmdOrCtrl+I',
+          click: () => mainWindow?.webContents.send('menu:import-curl')
+        },
         { label: 'Open data folder', click: () => openStorageFolder() }
       ]
     },

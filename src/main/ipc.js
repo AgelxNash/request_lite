@@ -1,6 +1,6 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
 // (см. src/preload/index.js). Префиксы: projects:*, requests:*, settings:*, data:*, http:*.
-import { ipcMain, shell } from 'electron'
+import { clipboard, ipcMain, shell } from 'electron'
 import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
 
@@ -31,6 +31,12 @@ export function registerIpc() {
   ipcMain.handle('environments:setActive', (_event, { projectId, environmentId }) =>
     storage.setActiveEnvironment(projectId, environmentId)
   )
+
+  // Копирование в системный буфер (renderer-clipboard требует permission handler — идём через main).
+  ipcMain.handle('clipboard:write', (_event, text) => {
+    clipboard.writeText(String(text ?? ''))
+    return true
+  })
 
   ipcMain.handle('settings:get', () => storage.getSettings())
   ipcMain.handle('settings:set', (_event, patch) => storage.setSettings(patch))
