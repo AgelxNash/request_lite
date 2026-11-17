@@ -37,6 +37,13 @@ export const useProjectsStore = defineStore('projects', {
       if (index !== -1) this.projects[index] = updated
       return updated
     },
+    // Блокировка проекта (защита от удаления). Ответ main — обновлённая запись.
+    async setLocked(id, locked) {
+      const updated = await window.api.projects.setLocked(id, locked)
+      const index = this.projects.findIndex((p) => p.id === id)
+      if (index !== -1) this.projects[index] = updated
+      return updated
+    },
     async remove(id) {
       try {
         await window.api.projects.delete(id)

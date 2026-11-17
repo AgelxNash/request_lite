@@ -83,7 +83,7 @@ export async function createProject(name) {
   if (!trimmed) throw new Error('Имя проекта не может быть пустым')
   await ensureDirs()
   const now = new Date().toISOString()
-  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now }
+  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false }
   const projects = await listProjects()
   projects.push(project)
   await writeJsonAtomic(indexPath(), projects)
@@ -109,11 +109,26 @@ export async function renameProject(id, name) {
 
 export async function deleteProject(id) {
   const projects = await listProjects()
+  const project = projects.find((p) => p.id === id)
+  if (!project) throw new Error(`Проект не найден: ${id}`)
+  // Guard до мутаций: заблокированный проект не удаляется даже минуя UI.
+  if (project.locked === true) throw new Error('Проект заблокирован')
   const next = projects.filter((p) => p.id !== id)
-  if (next.length === projects.length) throw new Error(`Проект не найден: ${id}`)
   await writeJsonAtomic(indexPath(), next)
   await rm(projectPath(id), { force: true })
   return true
+}
+
+// Блокировка проекта (защита от удаления). Флаг живёт в индексе.
+export async function setProjectLocked(id, locked) {
+  if (typeof locked !== 'boolean') throw new Error('locked должен быть boolean')
+  const projects = await listProjects()
+  const project = projects.find((p) => p.id === id)
+  if (!project) throw new Error(`Проект не найден: ${id}`)
+  project.locked = locked
+  project.updatedAt = new Date().toISOString()
+  await writeJsonAtomic(indexPath(), projects)
+  return project
 }
 
 export async function getProject(id) {

@@ -104,6 +104,45 @@ try {
     await assert.rejects(() => storage.deleteProject('no-such-id'), /не найден/)
   })
 
+  // --- Блокировка проекта: setLocked + guard удаления ---
+  const lockProject = await storage.createProject('Защищённый')
+
+  await check('createProject создаёт запись с locked: false', async () => {
+    const projects = await storage.listProjects()
+    const created = projects.find((p) => p.id === lockProject.id)
+    assert.equal(created.locked, false)
+  })
+
+  await check('setProjectLocked пишет флаг на диск и валидирует аргументы', async () => {
+    const updated = await storage.setProjectLocked(lockProject.id, true)
+    assert.equal(updated.locked, true)
+    const onDisk = await storage.getProject(lockProject.id)
+    // флаг в индексе; файл проекта не обязан его содержать — проверяем индекс
+    const projects = await storage.listProjects()
+    assert.equal(projects.find((p) => p.id === lockProject.id).locked, true)
+    await assert.rejects(() => storage.setProjectLocked(lockProject.id, 'yes'), /boolean/)
+    await assert.rejects(() => storage.setProjectLocked('no-such-id', true), /не найден/)
+    void onDisk
+  })
+
+  await check('deleteProject отклоняет заблокированный проект, данные целы', async () => {
+    await assert.rejects(() => storage.deleteProject(lockProject.id), /заблокирован/)
+    const projects = await storage.listProjects()
+    assert.ok(projects.some((p) => p.id === lockProject.id), 'запись в индексе на месте')
+    const data = await storage.getProject(lockProject.id)
+    assert.ok(data, 'файл проекта на месте')
+  })
+
+  await check('после разблокировки удаление работает, persist блокировки между bootstrap', async () => {
+    // persist: перечитываем через новый bootstrap (кэш настроек не участвует, но проверим чтение с диска)
+    const projects = await storage.listProjects()
+    assert.equal(projects.find((p) => p.id === lockProject.id).locked, true)
+    await storage.setProjectLocked(lockProject.id, false)
+    await storage.deleteProject(lockProject.id)
+    const after = await storage.listProjects()
+    assert.ok(!after.some((p) => p.id === lockProject.id), 'проект удалён после разблокировки')
+  })
+
   // --- Запросы проекта: save/list/delete ---
   const requestsProject = await storage.createProject('Хранилище запросов')
   const fullRequest = {

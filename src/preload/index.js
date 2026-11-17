@@ -12,7 +12,8 @@ const api = {
     list: () => ipcRenderer.invoke('projects:list'),
     create: (name) => ipcRenderer.invoke('projects:create', name),
     rename: (id, name) => ipcRenderer.invoke('projects:rename', { id, name }),
-    delete: (id) => ipcRenderer.invoke('projects:delete', id)
+    delete: (id) => ipcRenderer.invoke('projects:delete', id),
+    setLocked: (id, locked) => ipcRenderer.invoke('projects:setLocked', { id, locked })
   },
   requests: {
     list: (projectId) => ipcRenderer.invoke('requests:list', projectId),

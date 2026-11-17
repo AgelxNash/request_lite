@@ -14,6 +14,7 @@ export function registerIpc() {
   ipcMain.handle('projects:create', (_event, name) => storage.createProject(name))
   ipcMain.handle('projects:rename', (_event, { id, name }) => storage.renameProject(id, name))
   ipcMain.handle('projects:delete', (_event, id) => storage.deleteProject(id))
+  ipcMain.handle('projects:setLocked', (_event, { id, locked }) => storage.setProjectLocked(id, locked))
 
   ipcMain.handle('requests:list', (_event, projectId) => storage.listRequests(projectId))
   ipcMain.handle('requests:save', (_event, { projectId, request }) => storage.saveRequest(projectId, request))

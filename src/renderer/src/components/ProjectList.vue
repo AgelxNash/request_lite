@@ -16,7 +16,21 @@ async function rename(project) {
   await projects.rename(project.id, name)
 }
 
+async function toggleLock(project) {
+  const locking = project.locked !== true
+  const confirmed = await dialog.value.confirm({
+    title: locking ? 'Заблокировать проект' : 'Разблокировать проект',
+    message: locking
+      ? `Заблокировать проект «${project.name}»? Его нельзя будет удалить до разблокировки.`
+      : `Разблокировать проект «${project.name}»?`,
+    confirmText: locking ? 'Заблокировать' : 'Разблокировать'
+  })
+  if (!confirmed) return
+  await projects.setLocked(project.id, locking)
+}
+
 async function remove(project) {
+  if (project.locked === true) return
   const confirmed = await dialog.value.confirm({
     title: 'Удалить проект',
     message: `Удалить проект «${project.name}»? Его запросы и окружения будут потеряны.`,
@@ -35,8 +49,19 @@ async function remove(project) {
       :class="{ active: project.id === projects.activeProjectId }"
       @click="projects.select(project.id)"
     >
-      <span class="project-name" :title="project.name">{{ project.name }}</span>
+      <span class="project-name" :title="project.name">
+        <span v-if="project.locked === true" class="project-lock-badge" title="Проект заблокирован">🔒</span>
+        {{ project.name }}
+      </span>
       <span class="project-actions">
+        <button
+          class="btn-icon"
+          :title="project.locked === true ? 'Разблокировать проект' : 'Заблокировать проект'"
+          :aria-label="project.locked === true ? 'Разблокировать проект' : 'Заблокировать проект'"
+          @click.stop="toggleLock(project)"
+        >
+          {{ project.locked === true ? '🔒' : '🔓' }}
+        </button>
         <button
           class="btn-icon"
           title="Переименовать"
@@ -47,7 +72,8 @@ async function remove(project) {
         </button>
         <button
           class="btn-icon btn-icon-danger"
-          title="Удалить"
+          :disabled="project.locked === true"
+          :title="project.locked === true ? 'Проект заблокирован' : 'Удалить'"
           aria-label="Удалить проект"
           @click.stop="remove(project)"
         >

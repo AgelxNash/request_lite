@@ -310,6 +310,20 @@ select:disabled {
   white-space: nowrap;
 }
 
+.project-lock-badge {
+  margin-right: 4px;
+  font-size: 11px;
+}
+
+.btn-icon:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.btn-icon:disabled:hover {
+  background: none;
+}
+
 .project-actions {
   /* Место под кнопки зарезервировано всегда — иначе строки «дёргаются» при наведении. */
   display: inline-flex;
