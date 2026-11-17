@@ -27,6 +27,11 @@ const activeParamsCount = computed(
   () => tabs.activeTab?.params.filter((p) => p.enabled && p.key !== '').length ?? 0
 )
 
+// Активные заголовки — та же формула, бейдж у вкладки Headers.
+const activeHeadersCount = computed(
+  () => tabs.activeTab?.headers.filter((h) => h.enabled && h.key !== '').length ?? 0
+)
+
 const canSend = computed(() => {
   const tab = tabs.activeTab
   return !!tab && !tab.sending && tab.url.trim() !== ''
@@ -78,6 +83,7 @@ function cancel() {
       >
         {{ name }}
         <span v-if="name === 'Params' && activeParamsCount" class="tab-counter">{{ activeParamsCount }}</span>
+        <span v-if="name === 'Headers' && activeHeadersCount" class="tab-counter">{{ activeHeadersCount }}</span>
       </button>
     </div>
 

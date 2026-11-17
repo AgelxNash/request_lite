@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 const storage = await import('../src/main/storage.js')
 const http = await import('../src/main/http.js')
 const format = await import('../src/renderer/src/lib/format.js')
+const defaults = await import('../src/renderer/src/lib/defaults.js')
 
 let passed = 0
 
@@ -438,6 +439,29 @@ try {
       assert.ok(html.includes('<span class="tok-number">30</span>'))
       assert.ok(html.includes('<span class="tok-bool">true</span>'))
       assert.ok(!html.includes('<b>'), 'сырой HTML в вывод не попадает')
+    })
+
+    // --- Дефолтные заголовки (lib/defaults.js) ---
+
+    await check('DEFAULT_HEADERS: три включённых стандартных заголовка', () => {
+      const keys = defaults.DEFAULT_HEADERS.map((h) => h.key)
+      assert.deepEqual(keys, ['User-Agent', 'Accept', 'Accept-Language'])
+      for (const header of defaults.DEFAULT_HEADERS) {
+        assert.equal(header.enabled, true)
+        assert.ok(header.key && header.value, 'ключ и значение заполнены')
+      }
+    })
+
+    await check('DEFAULT_HEADERS отправляются вместо автозаголовков undici, без дублирования', async () => {
+      const response = await http.sendRequest(
+        { method: 'GET', url: `${base}/defaults`, headers: defaults.DEFAULT_HEADERS },
+        'smoke-default-headers'
+      )
+      const echo = JSON.parse(response.body)
+      assert.equal(echo.headers['user-agent'], 'PostmanLite/1.0')
+      // Ровно одно значение — undici не добавил своё */* рядом с нашим Accept.
+      assert.equal(echo.headers['accept'], 'application/json')
+      assert.equal(echo.headers['accept-language'], 'ru-RU,ru;q=0.9')
     })
   } finally {
     await closeServer()

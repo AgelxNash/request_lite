@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { DEFAULT_HEADERS } from '../lib/defaults.js'
 
 let nextTabId = 1
 let nextRowId = 1
@@ -15,7 +16,8 @@ function makeTab() {
     method: 'GET',
     url: '',
     params: [makeRow()],
-    headers: [makeRow()],
+    // Стандартные заголовки (включённые, перекрывают автозначения undici) + пустая строка.
+    headers: [...DEFAULT_HEADERS.map((h) => ({ ...h, id: nextRowId++ })), makeRow()],
     body: { type: 'none', json: '', form: [makeRow()], urlencoded: [makeRow()], text: '' },
     auth: { type: 'none', token: '', username: '', password: '', key: '', value: '', placement: 'header' },
     sslVerify: true,
