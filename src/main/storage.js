@@ -83,7 +83,7 @@ export async function createProject(name) {
   if (!trimmed) throw new Error('Имя проекта не может быть пустым')
   await ensureDirs()
   const now = new Date().toISOString()
-  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false }
+  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false, pinned: false }
   const projects = await listProjects()
   projects.push(project)
   await writeJsonAtomic(indexPath(), projects)
@@ -134,6 +134,8 @@ export async function setProjectLocked(id, locked) {
 // Перемещение проекта на новую позицию в индексе. Перемещение меняет только
 // порядок массива — записи (включая флаги locked) не трогаются, поэтому замок
 // проекта (защита от удаления, см. спеку) не мешает; источник отсекается на уровне UI.
+// Граница зоны закреплённых жёсткая: целевая позиция зажимается в зону источника
+// (закреплённый — в [0..N-1], обычный — в [N..], N = число закреплённых).
 export async function reorderProjects(id, toIndex) {
   if (!id || typeof id !== 'string') {
     throw new Error('У перемещаемого проекта должен быть id')
@@ -144,12 +146,35 @@ export async function reorderProjects(id, toIndex) {
   const projects = await listProjects()
   const from = projects.findIndex((p) => p.id === id)
   if (from === -1) throw new Error(`Проект не найден: ${id}`)
-  const to = Math.min(toIndex, projects.length - 1)
+  const pinnedCount = projects.filter((p) => p.pinned === true).length
+  const lower = projects[from].pinned === true ? 0 : pinnedCount
+  const upper = projects[from].pinned === true ? pinnedCount - 1 : projects.length - 1
+  const to = Math.max(lower, Math.min(toIndex, upper))
   if (to === from) return projects
   const [moved] = projects.splice(from, 1)
   projects.splice(to, 0, moved)
   await writeJsonAtomic(indexPath(), projects)
   return projects
+}
+
+// Закрепление проекта (верхняя зона списка). Флаг — метаданные записи индекса.
+// Стабильная нормализация: закреплённые — префикс массива, новый закреплённый
+// встаёт после последнего закреплённого, откреплённый — перед первым обычным.
+function normalizeProjectZone(projects) {
+  const pinned = projects.filter((p) => p.pinned === true)
+  const rest = projects.filter((p) => p.pinned !== true)
+  return [...pinned, ...rest]
+}
+
+export async function setProjectPinned(id, pinned) {
+  if (typeof pinned !== 'boolean') throw new Error('pinned должен быть boolean')
+  const projects = await listProjects()
+  const project = projects.find((p) => p.id === id)
+  if (!project) throw new Error(`Проект не найден: ${id}`)
+  project.pinned = pinned
+  const next = normalizeProjectZone(projects)
+  await writeJsonAtomic(indexPath(), next)
+  return next
 }
 
 // Bulk-импорт коллекции Postman: проект в индексе + файл проекта
@@ -159,7 +184,7 @@ export async function importCollection({ name, requests, variables }) {
   if (!trimmed) throw new Error('Имя проекта не может быть пустым')
   await ensureDirs()
   const now = new Date().toISOString()
-  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false }
+  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false, pinned: false }
   const environment = {
     id: randomUUID(),
     name: trimmed,

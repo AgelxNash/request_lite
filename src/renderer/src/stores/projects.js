@@ -57,13 +57,21 @@ export const useProjectsStore = defineStore('projects', {
         await this.load()
       }
     },
+    // Закрепление проекта (верхняя зона списка). Ответ main — нормализованный список.
+    async setPinned(id, pinned) {
+      this.projects = await window.api.projects.setPinned(id, pinned)
+    },
     // Перемещение проекта в списке. Во время drag порядок уже менялся локально
     // (moveLocal); здесь один IPC на завершение жеста — одна атомарная запись индекса.
     // Сбой/откат — перечитываем состояние диска. Активный проект не зависит от порядка.
     moveLocal(id, toIndex) {
       const from = this.projects.findIndex((p) => p.id === id)
       if (from === -1) return
-      const to = Math.max(0, Math.min(toIndex, this.projects.length - 1))
+      // Дублирующая защита зоны pin: честные зоны во время drag, IPC-ответ — истина.
+      const pinnedCount = this.projects.filter((p) => p.pinned === true).length
+      const lower = this.projects[from].pinned === true ? 0 : pinnedCount
+      const upper = this.projects[from].pinned === true ? pinnedCount - 1 : this.projects.length - 1
+      const to = Math.max(lower, Math.min(toIndex, upper))
       if (to === from) return
       const [moved] = this.projects.splice(from, 1)
       this.projects.splice(to, 0, moved)
