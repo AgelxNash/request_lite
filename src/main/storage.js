@@ -246,6 +246,28 @@ export async function setRequestLocked(projectId, requestId, locked) {
   return requests
 }
 
+// Перемещение запроса на новую позицию в списке проекта. Перемещение меняет только
+// порядок массива — содержимое и флаги locked записей не трогаются, поэтому замки
+// запросов и блокировка проекта (защита содержимого и удаления, см. спеки) не мешают.
+export async function reorderRequests(projectId, requestId, toIndex) {
+  if (!requestId || typeof requestId !== 'string') {
+    throw new Error('У перемещаемого запроса должен быть id')
+  }
+  if (!Number.isInteger(toIndex) || toIndex < 0) {
+    throw new Error('toIndex должен быть целым числом >= 0')
+  }
+  const project = await requireProject(projectId)
+  const requests = project.requests ?? []
+  const from = requests.findIndex((r) => r.id === requestId)
+  if (from === -1) throw new Error(`Запрос не найден: ${requestId}`)
+  const to = Math.min(toIndex, requests.length - 1)
+  if (to === from) return requests
+  const [moved] = requests.splice(from, 1)
+  requests.splice(to, 0, moved)
+  await writeJsonAtomic(projectPath(projectId), { ...project, requests })
+  return requests
+}
+
 // --- Окружения проекта ---
 
 export async function listEnvironments(projectId) {

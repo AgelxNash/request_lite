@@ -600,6 +600,30 @@ select:disabled {
   overflow-y: auto;
 }
 
+/* Незаблокированная строка — drag-источник; замок drag не начинает. */
+.request-item {
+  cursor: grab;
+}
+
+.request-item.locked {
+  cursor: default;
+}
+
+.request-item.dragging {
+  position: relative;
+  z-index: 1;
+  opacity: 0.75;
+  box-shadow: var(--shadow);
+}
+
+.request-list.is-dragging {
+  cursor: grabbing;
+}
+
+.request-list.is-dragging .request-item.locked {
+  cursor: grabbing;
+}
+
 .tab-close {
   display: inline-flex;
   align-items: center;

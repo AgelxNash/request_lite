@@ -33,6 +33,27 @@ export const useRequestsStore = defineStore('requests', {
       const projects = useProjectsStore()
       if (!projects.activeProjectId) throw new Error('Нет активного проекта')
       this.items = await window.api.requests.setLocked(projects.activeProjectId, requestId, locked)
+    },
+    // Перемещение запроса в списке проекта. Во время drag порядок уже менялся
+    // локально (moveLocal); здесь один IPC на завершение жеста — одна атомарная
+    // запись на диск. Сбой/откат — перечитываем состояние диска.
+    moveLocal(requestId, toIndex) {
+      const from = this.items.findIndex((r) => r.id === requestId)
+      if (from === -1) return
+      const to = Math.max(0, Math.min(toIndex, this.items.length - 1))
+      if (to === from) return
+      const [moved] = this.items.splice(from, 1)
+      this.items.splice(to, 0, moved)
+    },
+    async reorder(requestId, toIndex) {
+      const projects = useProjectsStore()
+      if (!projects.activeProjectId) throw new Error('Нет активного проекта')
+      try {
+        this.items = await window.api.requests.reorder(projects.activeProjectId, requestId, toIndex)
+      } catch (error) {
+        console.error('Не удалось сохранить порядок запросов:', error)
+        await this.load(projects.activeProjectId)
+      }
     }
   }
 })

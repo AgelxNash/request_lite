@@ -30,7 +30,9 @@ const api = {
     save: (projectId, request) => ipcRenderer.invoke('requests:save', { projectId, request }),
     delete: (projectId, requestId) => ipcRenderer.invoke('requests:delete', { projectId, requestId }),
     setLocked: (projectId, requestId, locked) =>
-      ipcRenderer.invoke('requests:setLocked', { projectId, requestId, locked })
+      ipcRenderer.invoke('requests:setLocked', { projectId, requestId, locked }),
+    reorder: (projectId, requestId, toIndex) =>
+      ipcRenderer.invoke('requests:reorder', { projectId, requestId, toIndex })
   },
   environments: {
     list: (projectId) => ipcRenderer.invoke('environments:list', projectId),
