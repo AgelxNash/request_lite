@@ -57,6 +57,25 @@ export const useProjectsStore = defineStore('projects', {
         await this.load()
       }
     },
+    // Перемещение проекта в списке. Во время drag порядок уже менялся локально
+    // (moveLocal); здесь один IPC на завершение жеста — одна атомарная запись индекса.
+    // Сбой/откат — перечитываем состояние диска. Активный проект не зависит от порядка.
+    moveLocal(id, toIndex) {
+      const from = this.projects.findIndex((p) => p.id === id)
+      if (from === -1) return
+      const to = Math.max(0, Math.min(toIndex, this.projects.length - 1))
+      if (to === from) return
+      const [moved] = this.projects.splice(from, 1)
+      this.projects.splice(to, 0, moved)
+    },
+    async reorder(id, toIndex) {
+      try {
+        this.projects = await window.api.projects.reorder(id, toIndex)
+      } catch (error) {
+        console.error('Не удалось сохранить порядок проектов:', error)
+        await this.load()
+      }
+    },
     // Bulk-импорт коллекции Postman: main создаёт проект, store обновляется из ответа.
     async importCollection(payload) {
       const project = await window.api.projects.importCollection(payload)

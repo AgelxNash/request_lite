@@ -131,6 +131,27 @@ export async function setProjectLocked(id, locked) {
   return project
 }
 
+// Перемещение проекта на новую позицию в индексе. Перемещение меняет только
+// порядок массива — записи (включая флаги locked) не трогаются, поэтому замок
+// проекта (защита от удаления, см. спеку) не мешает; источник отсекается на уровне UI.
+export async function reorderProjects(id, toIndex) {
+  if (!id || typeof id !== 'string') {
+    throw new Error('У перемещаемого проекта должен быть id')
+  }
+  if (!Number.isInteger(toIndex) || toIndex < 0) {
+    throw new Error('toIndex должен быть целым числом >= 0')
+  }
+  const projects = await listProjects()
+  const from = projects.findIndex((p) => p.id === id)
+  if (from === -1) throw new Error(`Проект не найден: ${id}`)
+  const to = Math.min(toIndex, projects.length - 1)
+  if (to === from) return projects
+  const [moved] = projects.splice(from, 1)
+  projects.splice(to, 0, moved)
+  await writeJsonAtomic(indexPath(), projects)
+  return projects
+}
+
 // Bulk-импорт коллекции Postman: проект в индексе + файл проекта
 // (requests[] + окружение с именем коллекции + activeEnvId) одной атомарной записью.
 export async function importCollection({ name, requests, variables }) {

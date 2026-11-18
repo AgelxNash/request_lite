@@ -144,6 +144,57 @@ try {
     assert.ok(!after.some((p) => p.id === lockProject.id), 'проект удалён после разблокировки')
   })
 
+  // --- Перемещение проектов: reorderProjects (порядок массива индекса) ---
+  const rA = await storage.createProject('Reorder-A')
+  const rB = await storage.createProject('Reorder-B')
+  const rC = await storage.createProject('Reorder-C')
+  // Подпоследовательность из трёх тестовых проектов: остальные тесты могут
+  // добавлять в индекс свои записи — порядок внутри тройки не зависит от них.
+  const rIds = [rA.id, rB.id, rC.id]
+  const rNames = async () =>
+    (await storage.listProjects())
+      .filter((p) => rIds.includes(p.id))
+      .map((p) => p.name)
+
+  await check('reorderProjects меняет порядок индекса, замок записи не тронут', async () => {
+    await storage.setProjectLocked(rB.id, true) // замок соседа не мешает
+    await storage.reorderProjects(rC.id, 0)
+    assert.deepEqual(await rNames(), ['Reorder-C', 'Reorder-A', 'Reorder-B'])
+    // Персистентность: порядок и флаг замка перечитываются с диска.
+    const reread = await storage.listProjects()
+    assert.deepEqual(
+      reread.filter((p) => rIds.includes(p.id)).map((p) => p.name),
+      ['Reorder-C', 'Reorder-A', 'Reorder-B']
+    )
+    assert.equal(reread.find((p) => p.id === rB.id).locked, true)
+  })
+
+  await check('reorderProjects двигает и сам заблокированный проект (содержимое неизменно)', async () => {
+    const list = await storage.reorderProjects(rB.id, 1)
+    assert.equal(list.find((p) => p.id === rB.id).locked, true)
+    assert.deepEqual(await rNames(), ['Reorder-C', 'Reorder-B', 'Reorder-A'])
+    await storage.setProjectLocked(rB.id, false)
+  })
+
+  await check('reorderProjects отклоняет невалидные аргументы', async () => {
+    await assert.rejects(() => storage.reorderProjects('', 0), /должен быть id/)
+    await assert.rejects(() => storage.reorderProjects(rB.id, -1), /toIndex/)
+    await assert.rejects(() => storage.reorderProjects(rB.id, 1.5), /toIndex/)
+    await assert.rejects(() => storage.reorderProjects('no-such-id', 0), /не найден/)
+    // toIndex больше длины зажимается, а не отклоняется.
+    await storage.reorderProjects(rB.id, 99)
+    assert.deepEqual(await rNames(), ['Reorder-C', 'Reorder-A', 'Reorder-B'])
+    await storage.reorderProjects(rB.id, 1)
+  })
+
+  await check('после reorder-тестов тестовые проекты удаляются', async () => {
+    await storage.deleteProject(rA.id)
+    await storage.deleteProject(rB.id)
+    await storage.deleteProject(rC.id)
+    const after = await storage.listProjects()
+    assert.ok(!after.some((p) => rIds.includes(p.id)), 'тройка удалена из индекса')
+  })
+
   // --- Запросы проекта: save/list/delete ---
   const requestsProject = await storage.createProject('Хранилище запросов')
   const fullRequest = {

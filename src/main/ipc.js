@@ -17,6 +17,7 @@ export function registerIpc() {
   ipcMain.handle('projects:rename', (_event, { id, name }) => storage.renameProject(id, name))
   ipcMain.handle('projects:delete', (_event, id) => storage.deleteProject(id))
   ipcMain.handle('projects:setLocked', (_event, { id, locked }) => storage.setProjectLocked(id, locked))
+  ipcMain.handle('projects:reorder', (_event, { id, toIndex }) => storage.reorderProjects(id, toIndex))
   ipcMain.handle('projects:importCollection', (_event, payload) => storage.importCollection(payload))
 
   // Выбор JSON-файла коллекции Postman + чтение содержимого (нативный диалог в main).

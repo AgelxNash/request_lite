@@ -14,6 +14,7 @@ const api = {
     rename: (id, name) => ipcRenderer.invoke('projects:rename', { id, name }),
     delete: (id) => ipcRenderer.invoke('projects:delete', id),
     setLocked: (id, locked) => ipcRenderer.invoke('projects:setLocked', { id, locked }),
+    reorder: (id, toIndex) => ipcRenderer.invoke('projects:reorder', { id, toIndex }),
     importCollection: (payload) => ipcRenderer.invoke('projects:importCollection', payload)
   },
   postman: {
