@@ -14,6 +14,8 @@ const api = {
     rename: (id, name) => ipcRenderer.invoke('projects:rename', { id, name }),
     delete: (id) => ipcRenderer.invoke('projects:delete', id),
     setLocked: (id, locked) => ipcRenderer.invoke('projects:setLocked', { id, locked }),
+    setPinned: (id, pinned) => ipcRenderer.invoke('projects:setPinned', { id, pinned }),
+    reorder: (id, toIndex) => ipcRenderer.invoke('projects:reorder', { id, toIndex }),
     importCollection: (payload) => ipcRenderer.invoke('projects:importCollection', payload)
   },
   postman: {
@@ -30,7 +32,11 @@ const api = {
     save: (projectId, request) => ipcRenderer.invoke('requests:save', { projectId, request }),
     delete: (projectId, requestId) => ipcRenderer.invoke('requests:delete', { projectId, requestId }),
     setLocked: (projectId, requestId, locked) =>
-      ipcRenderer.invoke('requests:setLocked', { projectId, requestId, locked })
+      ipcRenderer.invoke('requests:setLocked', { projectId, requestId, locked }),
+    setPinned: (projectId, requestId, pinned) =>
+      ipcRenderer.invoke('requests:setPinned', { projectId, requestId, pinned }),
+    reorder: (projectId, requestId, toIndex) =>
+      ipcRenderer.invoke('requests:reorder', { projectId, requestId, toIndex })
   },
   environments: {
     list: (projectId) => ipcRenderer.invoke('environments:list', projectId),

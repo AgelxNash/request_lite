@@ -144,6 +144,120 @@ try {
     assert.ok(!after.some((p) => p.id === lockProject.id), 'проект удалён после разблокировки')
   })
 
+  // --- Перемещение проектов: reorderProjects (порядок массива индекса) ---
+  const rA = await storage.createProject('Reorder-A')
+  const rB = await storage.createProject('Reorder-B')
+  const rC = await storage.createProject('Reorder-C')
+  // Подпоследовательность из трёх тестовых проектов: остальные тесты могут
+  // добавлять в индекс свои записи — порядок внутри тройки не зависит от них.
+  const rIds = [rA.id, rB.id, rC.id]
+  const rNames = async () =>
+    (await storage.listProjects())
+      .filter((p) => rIds.includes(p.id))
+      .map((p) => p.name)
+
+  await check('reorderProjects меняет порядок индекса, замок записи не тронут', async () => {
+    await storage.setProjectLocked(rB.id, true) // замок соседа не мешает
+    await storage.reorderProjects(rC.id, 0)
+    assert.deepEqual(await rNames(), ['Reorder-C', 'Reorder-A', 'Reorder-B'])
+    // Персистентность: порядок и флаг замка перечитываются с диска.
+    const reread = await storage.listProjects()
+    assert.deepEqual(
+      reread.filter((p) => rIds.includes(p.id)).map((p) => p.name),
+      ['Reorder-C', 'Reorder-A', 'Reorder-B']
+    )
+    assert.equal(reread.find((p) => p.id === rB.id).locked, true)
+  })
+
+  await check('reorderProjects двигает и сам заблокированный проект (содержимое неизменно)', async () => {
+    const list = await storage.reorderProjects(rB.id, 1)
+    assert.equal(list.find((p) => p.id === rB.id).locked, true)
+    assert.deepEqual(await rNames(), ['Reorder-C', 'Reorder-B', 'Reorder-A'])
+    await storage.setProjectLocked(rB.id, false)
+  })
+
+  await check('reorderProjects отклоняет невалидные аргументы', async () => {
+    await assert.rejects(() => storage.reorderProjects('', 0), /должен быть id/)
+    await assert.rejects(() => storage.reorderProjects(rB.id, -1), /toIndex/)
+    await assert.rejects(() => storage.reorderProjects(rB.id, 1.5), /toIndex/)
+    await assert.rejects(() => storage.reorderProjects('no-such-id', 0), /не найден/)
+    // toIndex больше длины зажимается, а не отклоняется.
+    await storage.reorderProjects(rB.id, 99)
+    assert.deepEqual(await rNames(), ['Reorder-C', 'Reorder-A', 'Reorder-B'])
+    await storage.reorderProjects(rB.id, 1)
+  })
+
+  await check('после reorder-тестов тестовые проекты удаляются', async () => {
+    await storage.deleteProject(rA.id)
+    await storage.deleteProject(rB.id)
+    await storage.deleteProject(rC.id)
+    const after = await storage.listProjects()
+    assert.ok(!after.some((p) => rIds.includes(p.id)), 'тройка удалена из индекса')
+  })
+
+  // --- Закрепление проектов: setProjectPinned (верхняя зона индекса) ---
+  const pA = await storage.createProject('Pin-A')
+  const pB = await storage.createProject('Pin-B')
+  const pC = await storage.createProject('Pin-C')
+  let pD // создаётся в тесте «новые проекты не закреплены»
+  const pIds = [pA.id, pB.id, pC.id]
+  const pNames = async () =>
+    (await storage.listProjects())
+      .filter((p) => pIds.includes(p.id))
+      .map((p) => p.name)
+
+  await check('setProjectPinned закрепляет в верхнюю зону и пишет на диск', async () => {
+    await storage.setProjectPinned(pB.id, true)
+    let list = await storage.listProjects()
+    assert.deepEqual(await pNames(), ['Pin-B', 'Pin-A', 'Pin-C'])
+    assert.equal(list.find((p) => p.id === pB.id).pinned, true)
+    // Второй закреплённый встаёт после первого (последним среди закреплённых).
+    await storage.setProjectPinned(pC.id, true)
+    list = await storage.listProjects()
+    assert.deepEqual(await pNames(), ['Pin-B', 'Pin-C', 'Pin-A'])
+    assert.equal(list.find((p) => p.id === pC.id).pinned, true)
+  })
+
+  await check('renameProject не сбрасывает pin (метаданные записи)', async () => {
+    await storage.renameProject(pB.id, 'Pin-B2')
+    const list = await storage.listProjects()
+    const renamed = list.find((p) => p.id === pB.id)
+    assert.equal(renamed.name, 'Pin-B2')
+    assert.equal(renamed.pinned, true)
+  })
+
+  await check('reorderProjects зажимает позицию в зону pin', async () => {
+    // Закреплённый pC не выходит из зоны: попытка ниже границы — no-op для тройки.
+    await storage.reorderProjects(pC.id, 99)
+    assert.deepEqual(await pNames(), ['Pin-B2', 'Pin-C', 'Pin-A'])
+    // Обычный pA не входит в зону: попытка наверх — no-op для тройки.
+    await storage.reorderProjects(pA.id, 0)
+    assert.deepEqual(await pNames(), ['Pin-B2', 'Pin-C', 'Pin-A'])
+  })
+
+  await check('pin и lock независимы, новые проекты не закреплены', async () => {
+    await storage.setProjectLocked(pB.id, true)
+    let list = await storage.listProjects()
+    assert.equal(list.find((p) => p.id === pB.id).locked, true)
+    assert.equal(list.find((p) => p.id === pB.id).pinned, true)
+    pD = await storage.createProject('Pin-D')
+    list = await storage.listProjects()
+    assert.equal(list.find((p) => p.id === pD.id).pinned, false)
+    await storage.setProjectPinned(pB.id, false)
+    await storage.setProjectLocked(pB.id, false)
+  })
+
+  await check('setProjectPinned валидирует аргументы', async () => {
+    await assert.rejects(() => storage.setProjectPinned(pB.id, 'yes'), /boolean/)
+    await assert.rejects(() => storage.setProjectPinned('no-such-id', true), /не найден/)
+  })
+
+  await check('после pin-тестов тестовые проекты удаляются', async () => {
+    for (const id of [...pIds, pD.id]) await storage.deleteProject(id)
+    const after = await storage.listProjects()
+    assert.ok(!after.some((p) => [...pIds, pD.id].includes(p.id)), 'четвёрка удалена из индекса')
+  })
+
   // --- Запросы проекта: save/list/delete ---
   const requestsProject = await storage.createProject('Хранилище запросов')
   const fullRequest = {
@@ -238,6 +352,103 @@ try {
     assert.equal(list.find((r) => r.id === 'lr-1').name, 'Изменено свободно')
     const after = await storage.deleteRequest(lockReqProject.id, 'lr-1')
     assert.equal(after.length, 2)
+  })
+
+  // Текущее состояние lockReqProject: [lr-2, lr-3], оба разблокированы.
+
+  await check('reorderRequests перемещает запрос и пишет порядок на диск', async () => {
+    await storage.setRequestLocked(lockReqProject.id, 'lr-2', true) // замок соседа не мешает
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-3', 0)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    // Персистентность: повторное чтение с диска в том же порядке.
+    const reread = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(reread.map((r) => r.id), ['lr-3', 'lr-2'])
+    assert.equal(reread.find((r) => r.id === 'lr-2').locked, true, 'содержимое и замок не тронуты')
+  })
+
+  await check('reorderRequests двигает и сам заблокированный запрос (содержимое неизменно)', async () => {
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-2', 0)
+    assert.deepEqual(list.map((r) => r.id), ['lr-2', 'lr-3'])
+    assert.equal(list.find((r) => r.id === 'lr-2').locked, true)
+    await storage.setRequestLocked(lockReqProject.id, 'lr-2', false)
+  })
+
+  await check('reorderRequests отклоняет невалидные аргументы', async () => {
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, '', 0), /должен быть id/)
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, 'lr-2', -1), /toIndex/)
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, 'lr-2', 1.5), /toIndex/)
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, 'nope', 0), /не найден/)
+    // toIndex больше длины зажимается, а не отклоняется.
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-2', 99)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    await storage.reorderRequests(lockReqProject.id, 'lr-2', 0)
+  })
+
+  await check('reorderRequests работает при заблокированном проекте', async () => {
+    await storage.setProjectLocked(lockReqProject.id, true)
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-2', 1)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    await storage.setProjectLocked(lockReqProject.id, false)
+  })
+
+  // Текущее состояние lockReqProject: [lr-3, lr-2], оба разблокированы и не закреплены.
+
+  await check('setRequestPinned закрепляет в верхнюю зону и пишет на диск', async () => {
+    await storage.setRequestPinned(lockReqProject.id, 'lr-2', true)
+    const list = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(list.map((r) => r.id), ['lr-2', 'lr-3'], 'закреплённый — префикс списка')
+    assert.equal(list.find((r) => r.id === 'lr-2').pinned, true)
+    // Второй закреплённый встаёт после первого (последним среди закреплённых).
+    await storage.setRequestPinned(lockReqProject.id, 'lr-3', true)
+    const both = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(both.map((r) => r.id), ['lr-2', 'lr-3'])
+    assert.equal(both.every((r) => r.pinned === true), true)
+  })
+
+  await check('saveRequest не сбрасывает pin при обновлении содержимого', async () => {
+    const list = await storage.saveRequest(lockReqProject.id, { id: 'lr-2', name: 'Обновлено', url: 'https://upd.test' })
+    const lr2 = list.find((r) => r.id === 'lr-2')
+    assert.equal(lr2.pinned, true, 'pin сохранён при upsert')
+    assert.equal(lr2.name, 'Обновлено')
+    assert.deepEqual(list.map((r) => r.id), ['lr-2', 'lr-3'], 'позиция не изменилась')
+  })
+
+  await check('setRequestPinned открепляет перед первым обычным', async () => {
+    await storage.setRequestPinned(lockReqProject.id, 'lr-2', false)
+    const list = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    assert.equal(list.find((r) => r.id === 'lr-3').pinned, true)
+    assert.equal(list.find((r) => r.id === 'lr-2').pinned, false)
+  })
+
+  await check('reorderRequests зажимает позицию в зону pin', async () => {
+    // Обычный lr-2 (индекс 1) не входит в зону закреплённых: попытка в 0 — no-op.
+    const rest = await storage.reorderRequests(lockReqProject.id, 'lr-2', 0)
+    assert.deepEqual(rest.map((r) => r.id), ['lr-3', 'lr-2'])
+    // Закреплённый lr-3 (индекс 0) не выходит из зоны: попытка в 1 — no-op.
+    const pinned = await storage.reorderRequests(lockReqProject.id, 'lr-3', 1)
+    assert.deepEqual(pinned.map((r) => r.id), ['lr-3', 'lr-2'])
+  })
+
+  await check('saveRequest создаёт новый запрос незакреплённым, pin+lock независимы', async () => {
+    await storage.saveRequest(lockReqProject.id, { id: 'lr-4', name: 'Новый' })
+    let list = await storage.listRequests(lockReqProject.id)
+    assert.equal(list.find((r) => r.id === 'lr-4').pinned, false)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2', 'lr-4'])
+    // Заблокированный запрос закрепляется как обычно — флаги независимы.
+    await storage.setRequestLocked(lockReqProject.id, 'lr-3', true)
+    await storage.setRequestPinned(lockReqProject.id, 'lr-3', true)
+    list = await storage.listRequests(lockReqProject.id)
+    assert.equal(list.find((r) => r.id === 'lr-3').locked, true)
+    assert.equal(list.find((r) => r.id === 'lr-3').pinned, true)
+    await storage.setRequestPinned(lockReqProject.id, 'lr-3', false)
+    await storage.setRequestLocked(lockReqProject.id, 'lr-3', false)
+    await storage.deleteRequest(lockReqProject.id, 'lr-4')
+  })
+
+  await check('setRequestPinned валидирует аргументы', async () => {
+    await assert.rejects(() => storage.setRequestPinned(lockReqProject.id, 'lr-2', 'yes'), /boolean/)
+    await assert.rejects(() => storage.setRequestPinned(lockReqProject.id, 'nope', true), /не найден/)
   })
 
   // --- Postman-импорт: fixture + parseCollection (lib/postman.js) ---

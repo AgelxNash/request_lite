@@ -284,6 +284,30 @@ select:disabled {
   overflow-y: auto;
 }
 
+/* Незаблокированная строка — drag-источник; замок drag не начинает. */
+.project-list .project-item {
+  cursor: grab;
+}
+
+.project-list .project-item.locked {
+  cursor: default;
+}
+
+.project-list .project-item.dragging {
+  position: relative;
+  z-index: 1;
+  opacity: 0.75;
+  box-shadow: var(--shadow);
+}
+
+.project-list.is-dragging {
+  cursor: grabbing;
+}
+
+.project-list.is-dragging .project-item {
+  cursor: grabbing;
+}
+
 .project-item {
   display: flex;
   align-items: center;
@@ -358,6 +382,9 @@ select:disabled {
   border-right: 1px solid var(--border);
   color: var(--text-secondary);
   white-space: nowrap;
+  /* Текст вкладок не выделяется и не перехватывает жесты — иначе мешает перетаскиванию. */
+  user-select: none;
+  touch-action: none;
 }
 
 .tab.active {
@@ -597,6 +624,30 @@ select:disabled {
   overflow-y: auto;
 }
 
+/* Незаблокированная строка — drag-источник; замок drag не начинает. */
+.request-item {
+  cursor: grab;
+}
+
+.request-item.locked {
+  cursor: default;
+}
+
+.request-item.dragging {
+  position: relative;
+  z-index: 1;
+  opacity: 0.75;
+  box-shadow: var(--shadow);
+}
+
+.request-list.is-dragging {
+  cursor: grabbing;
+}
+
+.request-list.is-dragging .request-item.locked {
+  cursor: grabbing;
+}
+
 .tab-close {
   display: inline-flex;
   align-items: center;
@@ -609,6 +660,34 @@ select:disabled {
 .tab-close:hover {
   background: var(--bg-hover);
   color: var(--danger);
+}
+
+.tab-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.tab-pin:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+/* Перетаскиваемая вкладка приподнята над соседями, полоса показывает захват. */
+.tab.dragging {
+  position: relative;
+  z-index: 1;
+  opacity: 0.75;
+  transform: scale(1.03);
+  box-shadow: var(--shadow);
+  cursor: grabbing;
+}
+
+.tabs-strip.is-dragging {
+  cursor: grabbing;
 }
 
 .tab-add {

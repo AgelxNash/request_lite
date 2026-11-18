@@ -29,6 +29,9 @@ function makeTab() {
     // Связь с сохранённым запросом (id в файле проекта) и признак несохранённых правок.
     savedRequestId: null,
     dirty: false,
+    // UI-состояние строки вкладок (не часть модели запроса, в снимок не входит):
+    // закреплённые вкладки идут в массиве первыми.
+    pinned: false,
     // Runtime-состояние (не часть модели запроса): отправка и последний результат.
     sending: false,
     requestId: null,
@@ -97,6 +100,49 @@ export const useTabsStore = defineStore('tabs', {
     },
     setActive(id) {
       this.activeTabId = id
+    },
+    // Стабильная нормализация порядка: закреплённые вкладки образуют префикс массива,
+    // относительный порядок внутри каждой зоны сохраняется. Инвариант поддерживается
+    // после каждой мутации порядка (push/сплайс не ломают его — новые вкладки уходят в конец).
+    normalizeOrder() {
+      const pinned = this.tabs.filter((t) => t.pinned)
+      const rest = this.tabs.filter((t) => !t.pinned)
+      this.tabs = [...pinned, ...rest]
+    },
+    // Перестановка вкладки на визуальную позицию (0..tabs.length-1, индексы текущего
+    // массива до перестановки). Граница зон жёсткая: drag не меняет закрепление,
+    // целевая позиция зажимается в зону вкладки — закреплённые живут в [0..N-1],
+    // обычные в [N..], и перетаскивание не переводит вкладку через границу.
+    moveTab(id, toVisualIndex) {
+      const from = this.tabs.findIndex((t) => t.id === id)
+      if (from === -1) return
+      const tab = this.tabs[from]
+      const pinnedCount = this.tabs.filter((t) => t.pinned).length
+      const lower = tab.pinned ? 0 : pinnedCount
+      const upper = tab.pinned ? pinnedCount - 1 : this.tabs.length - 1
+      const to = Math.max(lower, Math.min(Math.trunc(toVisualIndex), upper))
+      if (to === from) return
+      this.tabs.splice(from, 1)
+      this.tabs.splice(to, 0, tab)
+      this.normalizeOrder()
+    },
+    // Закрепление/открепление. Нормализация сама ставит вкладку на край новой зоны:
+    // pin — после последней закреплённой, unpin — перед первой обычной.
+    togglePin(id) {
+      const tab = this.tabs.find((t) => t.id === id)
+      if (!tab) return
+      tab.pinned = !tab.pinned
+      this.normalizeOrder()
+    },
+    // Переименование вкладки. Имя — часть снимка запроса, поэтому rename помечает
+    // вкладку dirty: точка исчезнет после сохранения, до тех пор запрос не затронут.
+    renameTab(id, name) {
+      const tab = this.tabs.find((t) => t.id === id)
+      const trimmed = String(name ?? '').trim()
+      if (!tab || !trimmed) return false
+      tab.name = trimmed
+      tab.dirty = true
+      return true
     },
     updateActive(patch) {
       const tab = this.activeTab

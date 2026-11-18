@@ -83,7 +83,7 @@ export async function createProject(name) {
   if (!trimmed) throw new Error('Имя проекта не может быть пустым')
   await ensureDirs()
   const now = new Date().toISOString()
-  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false }
+  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false, pinned: false }
   const projects = await listProjects()
   projects.push(project)
   await writeJsonAtomic(indexPath(), projects)
@@ -131,6 +131,52 @@ export async function setProjectLocked(id, locked) {
   return project
 }
 
+// Перемещение проекта на новую позицию в индексе. Перемещение меняет только
+// порядок массива — записи (включая флаги locked) не трогаются, поэтому замок
+// проекта (защита от удаления, см. спеку) не мешает; источник отсекается на уровне UI.
+// Граница зоны закреплённых жёсткая: целевая позиция зажимается в зону источника
+// (закреплённый — в [0..N-1], обычный — в [N..], N = число закреплённых).
+export async function reorderProjects(id, toIndex) {
+  if (!id || typeof id !== 'string') {
+    throw new Error('У перемещаемого проекта должен быть id')
+  }
+  if (!Number.isInteger(toIndex) || toIndex < 0) {
+    throw new Error('toIndex должен быть целым числом >= 0')
+  }
+  const projects = await listProjects()
+  const from = projects.findIndex((p) => p.id === id)
+  if (from === -1) throw new Error(`Проект не найден: ${id}`)
+  const pinnedCount = projects.filter((p) => p.pinned === true).length
+  const lower = projects[from].pinned === true ? 0 : pinnedCount
+  const upper = projects[from].pinned === true ? pinnedCount - 1 : projects.length - 1
+  const to = Math.max(lower, Math.min(toIndex, upper))
+  if (to === from) return projects
+  const [moved] = projects.splice(from, 1)
+  projects.splice(to, 0, moved)
+  await writeJsonAtomic(indexPath(), projects)
+  return projects
+}
+
+// Закрепление проекта (верхняя зона списка). Флаг — метаданные записи индекса.
+// Стабильная нормализация: закреплённые — префикс массива, новый закреплённый
+// встаёт после последнего закреплённого, откреплённый — перед первым обычным.
+function normalizeProjectZone(projects) {
+  const pinned = projects.filter((p) => p.pinned === true)
+  const rest = projects.filter((p) => p.pinned !== true)
+  return [...pinned, ...rest]
+}
+
+export async function setProjectPinned(id, pinned) {
+  if (typeof pinned !== 'boolean') throw new Error('pinned должен быть boolean')
+  const projects = await listProjects()
+  const project = projects.find((p) => p.id === id)
+  if (!project) throw new Error(`Проект не найден: ${id}`)
+  project.pinned = pinned
+  const next = normalizeProjectZone(projects)
+  await writeJsonAtomic(indexPath(), next)
+  return next
+}
+
 // Bulk-импорт коллекции Postman: проект в индексе + файл проекта
 // (requests[] + окружение с именем коллекции + activeEnvId) одной атомарной записью.
 export async function importCollection({ name, requests, variables }) {
@@ -138,7 +184,7 @@ export async function importCollection({ name, requests, variables }) {
   if (!trimmed) throw new Error('Имя проекта не может быть пустым')
   await ensureDirs()
   const now = new Date().toISOString()
-  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false }
+  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false, pinned: false }
   const environment = {
     id: randomUUID(),
     name: trimmed,
@@ -159,7 +205,8 @@ export async function importCollection({ name, requests, variables }) {
     body: r.body ?? { type: 'none' },
     auth: r.auth ?? { type: 'none' },
     sslVerify: r.sslVerify !== false,
-    locked: false
+    locked: false,
+    pinned: false
   }))
   const projects = await listProjects()
   projects.push(project)
@@ -211,12 +258,17 @@ export async function saveRequest(projectId, request) {
   const requests = project.requests ?? []
   const index = requests.findIndex((r) => r.id === stored.id)
   if (index === -1) {
-    requests.push({ ...stored, locked: false })
+    requests.push({ ...stored, locked: false, pinned: false })
   } else {
     // Guard до мутаций: заблокированный запрос нельзя обновить даже минуя UI.
     if (requests[index].locked === true) throw new Error('Запрос заблокирован')
-    // Флаг блокировки — метаданные записи: не сбрасывается при сохранении содержимого.
-    requests[index] = { ...stored, locked: requests[index].locked === true }
+    // Флаги блокировки и закрепления — метаданные записи: не сбрасываются
+    // при сохранении содержимого.
+    requests[index] = {
+      ...stored,
+      locked: requests[index].locked === true,
+      pinned: requests[index].pinned === true
+    }
   }
   await writeJsonAtomic(projectPath(projectId), { ...project, requests })
   return requests
@@ -244,6 +296,54 @@ export async function setRequestLocked(projectId, requestId, locked) {
   existing.locked = locked
   await writeJsonAtomic(projectPath(projectId), { ...project, requests })
   return requests
+}
+
+// Перемещение запроса на новую позицию в списке проекта. Перемещение меняет только
+// порядок массива — содержимое и флаги locked записей не трогаются, поэтому замки
+// запросов и блокировка проекта (защита содержимого и удаления, см. спеки) не мешают.
+// Граница зоны закреплённых жёсткая: целевая позиция зажимается в зону источника
+// (закреплённый — в [0..N-1], обычный — в [N..], N = число закреплённых).
+export async function reorderRequests(projectId, requestId, toIndex) {
+  if (!requestId || typeof requestId !== 'string') {
+    throw new Error('У перемещаемого запроса должен быть id')
+  }
+  if (!Number.isInteger(toIndex) || toIndex < 0) {
+    throw new Error('toIndex должен быть целым числом >= 0')
+  }
+  const project = await requireProject(projectId)
+  const requests = project.requests ?? []
+  const from = requests.findIndex((r) => r.id === requestId)
+  if (from === -1) throw new Error(`Запрос не найден: ${requestId}`)
+  const pinnedCount = requests.filter((r) => r.pinned === true).length
+  const lower = requests[from].pinned === true ? 0 : pinnedCount
+  const upper = requests[from].pinned === true ? pinnedCount - 1 : requests.length - 1
+  const to = Math.max(lower, Math.min(toIndex, upper))
+  if (to === from) return requests
+  const [moved] = requests.splice(from, 1)
+  requests.splice(to, 0, moved)
+  await writeJsonAtomic(projectPath(projectId), { ...project, requests })
+  return requests
+}
+
+// Закрепление запроса (верхняя зона списка). Флаг — метаданные записи.
+// Стабильная нормализация: закреплённые — префикс массива, новый закреплённый
+// встаёт после последнего закреплённого, откреплённый — перед первым обычным.
+function normalizeRequestZone(requests) {
+  const pinned = requests.filter((r) => r.pinned === true)
+  const rest = requests.filter((r) => r.pinned !== true)
+  return [...pinned, ...rest]
+}
+
+export async function setRequestPinned(projectId, requestId, pinned) {
+  if (typeof pinned !== 'boolean') throw new Error('pinned должен быть boolean')
+  const project = await requireProject(projectId)
+  const requests = project.requests ?? []
+  const existing = requests.find((r) => r.id === requestId)
+  if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
+  existing.pinned = pinned
+  const next = normalizeRequestZone(requests)
+  await writeJsonAtomic(projectPath(projectId), { ...project, requests: next })
+  return next
 }
 
 // --- Окружения проекта ---

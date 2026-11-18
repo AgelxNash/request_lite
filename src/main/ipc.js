@@ -17,6 +17,8 @@ export function registerIpc() {
   ipcMain.handle('projects:rename', (_event, { id, name }) => storage.renameProject(id, name))
   ipcMain.handle('projects:delete', (_event, id) => storage.deleteProject(id))
   ipcMain.handle('projects:setLocked', (_event, { id, locked }) => storage.setProjectLocked(id, locked))
+  ipcMain.handle('projects:setPinned', (_event, { id, pinned }) => storage.setProjectPinned(id, pinned))
+  ipcMain.handle('projects:reorder', (_event, { id, toIndex }) => storage.reorderProjects(id, toIndex))
   ipcMain.handle('projects:importCollection', (_event, payload) => storage.importCollection(payload))
 
   // Выбор JSON-файла коллекции Postman + чтение содержимого (нативный диалог в main).
@@ -41,6 +43,12 @@ export function registerIpc() {
   )
   ipcMain.handle('requests:setLocked', (_event, { projectId, requestId, locked }) =>
     storage.setRequestLocked(projectId, requestId, locked)
+  )
+  ipcMain.handle('requests:setPinned', (_event, { projectId, requestId, pinned }) =>
+    storage.setRequestPinned(projectId, requestId, pinned)
+  )
+  ipcMain.handle('requests:reorder', (_event, { projectId, requestId, toIndex }) =>
+    storage.reorderRequests(projectId, requestId, toIndex)
   )
 
   ipcMain.handle('environments:list', (_event, projectId) => storage.listEnvironments(projectId))
