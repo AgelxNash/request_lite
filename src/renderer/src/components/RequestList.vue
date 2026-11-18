@@ -213,6 +213,7 @@ async function remove(request) {
         <span class="item-method" :class="`method-${request.method}`">{{ request.method }}</span>
         <span class="project-name" :title="request.name">
           <span v-if="request.locked === true" class="project-lock-badge" title="Запрос заблокирован">🔒</span>
+          <span v-if="request.pinned === true" class="project-lock-badge" title="Запрос закреплён">📌</span>
           {{ request.name }}
         </span>
         <span class="project-actions">
@@ -224,6 +225,15 @@ async function remove(request) {
             @click.stop="toggleLock(request)"
           >
             {{ request.locked === true ? '🔒' : '🔓' }}
+          </button>
+          <button
+            class="btn-icon"
+            :title="request.pinned === true ? 'Открепить запрос' : 'Закрепить запрос'"
+            :aria-label="request.pinned === true ? 'Открепить запрос' : 'Закрепить запрос'"
+            @pointerdown.stop
+            @click.stop="requests.setPinned(request.id, request.pinned !== true)"
+          >
+            {{ request.pinned === true ? '📍' : '📌' }}
           </button>
           <button
             class="btn-icon btn-icon-danger"

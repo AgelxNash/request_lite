@@ -43,6 +43,9 @@ export function registerIpc() {
   ipcMain.handle('requests:setLocked', (_event, { projectId, requestId, locked }) =>
     storage.setRequestLocked(projectId, requestId, locked)
   )
+  ipcMain.handle('requests:setPinned', (_event, { projectId, requestId, pinned }) =>
+    storage.setRequestPinned(projectId, requestId, pinned)
+  )
   ipcMain.handle('requests:reorder', (_event, { projectId, requestId, toIndex }) =>
     storage.reorderRequests(projectId, requestId, toIndex)
   )

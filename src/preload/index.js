@@ -32,6 +32,8 @@ const api = {
     delete: (projectId, requestId) => ipcRenderer.invoke('requests:delete', { projectId, requestId }),
     setLocked: (projectId, requestId, locked) =>
       ipcRenderer.invoke('requests:setLocked', { projectId, requestId, locked }),
+    setPinned: (projectId, requestId, pinned) =>
+      ipcRenderer.invoke('requests:setPinned', { projectId, requestId, pinned }),
     reorder: (projectId, requestId, toIndex) =>
       ipcRenderer.invoke('requests:reorder', { projectId, requestId, toIndex })
   },
