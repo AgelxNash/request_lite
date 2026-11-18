@@ -240,6 +240,43 @@ try {
     assert.equal(after.length, 2)
   })
 
+  // Текущее состояние lockReqProject: [lr-2, lr-3], оба разблокированы.
+
+  await check('reorderRequests перемещает запрос и пишет порядок на диск', async () => {
+    await storage.setRequestLocked(lockReqProject.id, 'lr-2', true) // замок соседа не мешает
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-3', 0)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    // Персистентность: повторное чтение с диска в том же порядке.
+    const reread = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(reread.map((r) => r.id), ['lr-3', 'lr-2'])
+    assert.equal(reread.find((r) => r.id === 'lr-2').locked, true, 'содержимое и замок не тронуты')
+  })
+
+  await check('reorderRequests двигает и сам заблокированный запрос (содержимое неизменно)', async () => {
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-2', 0)
+    assert.deepEqual(list.map((r) => r.id), ['lr-2', 'lr-3'])
+    assert.equal(list.find((r) => r.id === 'lr-2').locked, true)
+    await storage.setRequestLocked(lockReqProject.id, 'lr-2', false)
+  })
+
+  await check('reorderRequests отклоняет невалидные аргументы', async () => {
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, '', 0), /должен быть id/)
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, 'lr-2', -1), /toIndex/)
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, 'lr-2', 1.5), /toIndex/)
+    await assert.rejects(() => storage.reorderRequests(lockReqProject.id, 'nope', 0), /не найден/)
+    // toIndex больше длины зажимается, а не отклоняется.
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-2', 99)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    await storage.reorderRequests(lockReqProject.id, 'lr-2', 0)
+  })
+
+  await check('reorderRequests работает при заблокированном проекте', async () => {
+    await storage.setProjectLocked(lockReqProject.id, true)
+    const list = await storage.reorderRequests(lockReqProject.id, 'lr-2', 1)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    await storage.setProjectLocked(lockReqProject.id, false)
+  })
+
   // --- Postman-импорт: fixture + parseCollection (lib/postman.js) ---
 
   // Fixture: вложенные папки, все body-режимы, disabled-поля, collection-level auth, переменные.

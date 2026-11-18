@@ -42,6 +42,9 @@ export function registerIpc() {
   ipcMain.handle('requests:setLocked', (_event, { projectId, requestId, locked }) =>
     storage.setRequestLocked(projectId, requestId, locked)
   )
+  ipcMain.handle('requests:reorder', (_event, { projectId, requestId, toIndex }) =>
+    storage.reorderRequests(projectId, requestId, toIndex)
+  )
 
   ipcMain.handle('environments:list', (_event, projectId) => storage.listEnvironments(projectId))
   ipcMain.handle('environments:save', (_event, { projectId, environment }) =>
