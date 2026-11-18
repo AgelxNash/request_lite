@@ -180,7 +180,8 @@ export async function importCollection({ name, requests, variables }) {
     body: r.body ?? { type: 'none' },
     auth: r.auth ?? { type: 'none' },
     sslVerify: r.sslVerify !== false,
-    locked: false
+    locked: false,
+    pinned: false
   }))
   const projects = await listProjects()
   projects.push(project)
@@ -232,12 +233,17 @@ export async function saveRequest(projectId, request) {
   const requests = project.requests ?? []
   const index = requests.findIndex((r) => r.id === stored.id)
   if (index === -1) {
-    requests.push({ ...stored, locked: false })
+    requests.push({ ...stored, locked: false, pinned: false })
   } else {
     // Guard до мутаций: заблокированный запрос нельзя обновить даже минуя UI.
     if (requests[index].locked === true) throw new Error('Запрос заблокирован')
-    // Флаг блокировки — метаданные записи: не сбрасывается при сохранении содержимого.
-    requests[index] = { ...stored, locked: requests[index].locked === true }
+    // Флаги блокировки и закрепления — метаданные записи: не сбрасываются
+    // при сохранении содержимого.
+    requests[index] = {
+      ...stored,
+      locked: requests[index].locked === true,
+      pinned: requests[index].pinned === true
+    }
   }
   await writeJsonAtomic(projectPath(projectId), { ...project, requests })
   return requests
@@ -270,6 +276,8 @@ export async function setRequestLocked(projectId, requestId, locked) {
 // Перемещение запроса на новую позицию в списке проекта. Перемещение меняет только
 // порядок массива — содержимое и флаги locked записей не трогаются, поэтому замки
 // запросов и блокировка проекта (защита содержимого и удаления, см. спеки) не мешают.
+// Граница зоны закреплённых жёсткая: целевая позиция зажимается в зону источника
+// (закреплённый — в [0..N-1], обычный — в [N..], N = число закреплённых).
 export async function reorderRequests(projectId, requestId, toIndex) {
   if (!requestId || typeof requestId !== 'string') {
     throw new Error('У перемещаемого запроса должен быть id')
@@ -281,12 +289,36 @@ export async function reorderRequests(projectId, requestId, toIndex) {
   const requests = project.requests ?? []
   const from = requests.findIndex((r) => r.id === requestId)
   if (from === -1) throw new Error(`Запрос не найден: ${requestId}`)
-  const to = Math.min(toIndex, requests.length - 1)
+  const pinnedCount = requests.filter((r) => r.pinned === true).length
+  const lower = requests[from].pinned === true ? 0 : pinnedCount
+  const upper = requests[from].pinned === true ? pinnedCount - 1 : requests.length - 1
+  const to = Math.max(lower, Math.min(toIndex, upper))
   if (to === from) return requests
   const [moved] = requests.splice(from, 1)
   requests.splice(to, 0, moved)
   await writeJsonAtomic(projectPath(projectId), { ...project, requests })
   return requests
+}
+
+// Закрепление запроса (верхняя зона списка). Флаг — метаданные записи.
+// Стабильная нормализация: закреплённые — префикс массива, новый закреплённый
+// встаёт после последнего закреплённого, откреплённый — перед первым обычным.
+function normalizeRequestZone(requests) {
+  const pinned = requests.filter((r) => r.pinned === true)
+  const rest = requests.filter((r) => r.pinned !== true)
+  return [...pinned, ...rest]
+}
+
+export async function setRequestPinned(projectId, requestId, pinned) {
+  if (typeof pinned !== 'boolean') throw new Error('pinned должен быть boolean')
+  const project = await requireProject(projectId)
+  const requests = project.requests ?? []
+  const existing = requests.find((r) => r.id === requestId)
+  if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
+  existing.pinned = pinned
+  const next = normalizeRequestZone(requests)
+  await writeJsonAtomic(projectPath(projectId), { ...project, requests: next })
+  return next
 }
 
 // --- Окружения проекта ---

@@ -328,6 +328,66 @@ try {
     await storage.setProjectLocked(lockReqProject.id, false)
   })
 
+  // Текущее состояние lockReqProject: [lr-3, lr-2], оба разблокированы и не закреплены.
+
+  await check('setRequestPinned закрепляет в верхнюю зону и пишет на диск', async () => {
+    await storage.setRequestPinned(lockReqProject.id, 'lr-2', true)
+    const list = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(list.map((r) => r.id), ['lr-2', 'lr-3'], 'закреплённый — префикс списка')
+    assert.equal(list.find((r) => r.id === 'lr-2').pinned, true)
+    // Второй закреплённый встаёт после первого (последним среди закреплённых).
+    await storage.setRequestPinned(lockReqProject.id, 'lr-3', true)
+    const both = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(both.map((r) => r.id), ['lr-2', 'lr-3'])
+    assert.equal(both.every((r) => r.pinned === true), true)
+  })
+
+  await check('saveRequest не сбрасывает pin при обновлении содержимого', async () => {
+    const list = await storage.saveRequest(lockReqProject.id, { id: 'lr-2', name: 'Обновлено', url: 'https://upd.test' })
+    const lr2 = list.find((r) => r.id === 'lr-2')
+    assert.equal(lr2.pinned, true, 'pin сохранён при upsert')
+    assert.equal(lr2.name, 'Обновлено')
+    assert.deepEqual(list.map((r) => r.id), ['lr-2', 'lr-3'], 'позиция не изменилась')
+  })
+
+  await check('setRequestPinned открепляет перед первым обычным', async () => {
+    await storage.setRequestPinned(lockReqProject.id, 'lr-2', false)
+    const list = await storage.listRequests(lockReqProject.id)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2'])
+    assert.equal(list.find((r) => r.id === 'lr-3').pinned, true)
+    assert.equal(list.find((r) => r.id === 'lr-2').pinned, false)
+  })
+
+  await check('reorderRequests зажимает позицию в зону pin', async () => {
+    // Обычный lr-2 (индекс 1) не входит в зону закреплённых: попытка в 0 — no-op.
+    const rest = await storage.reorderRequests(lockReqProject.id, 'lr-2', 0)
+    assert.deepEqual(rest.map((r) => r.id), ['lr-3', 'lr-2'])
+    // Закреплённый lr-3 (индекс 0) не выходит из зоны: попытка в 1 — no-op.
+    const pinned = await storage.reorderRequests(lockReqProject.id, 'lr-3', 1)
+    assert.deepEqual(pinned.map((r) => r.id), ['lr-3', 'lr-2'])
+  })
+
+  await check('saveRequest создаёт новый запрос незакреплённым, pin+lock независимы', async () => {
+    await storage.saveRequest(lockReqProject.id, { id: 'lr-4', name: 'Новый' })
+    let list = await storage.listRequests(lockReqProject.id)
+    assert.equal(list.find((r) => r.id === 'lr-4').pinned, false)
+    assert.deepEqual(list.map((r) => r.id), ['lr-3', 'lr-2', 'lr-4'])
+    // Заблокированный запрос закрепляется как обычно — флаги независимы.
+    await storage.setRequestLocked(lockReqProject.id, 'lr-3', true)
+    await storage.setRequestPinned(lockReqProject.id, 'lr-3', true)
+    list = await storage.listRequests(lockReqProject.id)
+    assert.equal(list.find((r) => r.id === 'lr-3').locked, true)
+    assert.equal(list.find((r) => r.id === 'lr-3').pinned, true)
+    await storage.setRequestPinned(lockReqProject.id, 'lr-3', false)
+    await storage.setRequestLocked(lockReqProject.id, 'lr-3', false)
+    await storage.deleteRequest(lockReqProject.id, 'lr-4')
+  })
+
+  await check('setRequestPinned валидирует аргументы', async () => {
+    await assert.rejects(() => storage.setRequestPinned(lockReqProject.id, 'lr-2', 'yes'), /boolean/)
+    await assert.rejects(() => storage.setRequestPinned(lockReqProject.id, 'nope', true), /не найден/)
+  })
+
   // --- Postman-импорт: fixture + parseCollection (lib/postman.js) ---
 
   // Fixture: вложенные папки, все body-режимы, disabled-поля, collection-level auth, переменные.
