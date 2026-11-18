@@ -200,6 +200,7 @@ async function remove(project) {
     >
       <span class="project-name" :title="project.name">
         <span v-if="project.locked === true" class="project-lock-badge" title="Проект заблокирован">🔒</span>
+        <span v-if="project.pinned === true" class="project-lock-badge" title="Проект закреплён">📌</span>
         {{ project.name }}
       </span>
       <span class="project-actions">
@@ -211,6 +212,15 @@ async function remove(project) {
           @click.stop="toggleLock(project)"
         >
           {{ project.locked === true ? '🔒' : '🔓' }}
+        </button>
+        <button
+          class="btn-icon"
+          :title="project.pinned === true ? 'Открепить проект' : 'Закрепить проект'"
+          :aria-label="project.pinned === true ? 'Открепить проект' : 'Закрепить проект'"
+          @pointerdown.stop
+          @click.stop="projects.setPinned(project.id, project.pinned !== true)"
+        >
+          {{ project.pinned === true ? '📍' : '📌' }}
         </button>
         <button
           class="btn-icon"

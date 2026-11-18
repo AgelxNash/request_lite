@@ -195,6 +195,69 @@ try {
     assert.ok(!after.some((p) => rIds.includes(p.id)), 'тройка удалена из индекса')
   })
 
+  // --- Закрепление проектов: setProjectPinned (верхняя зона индекса) ---
+  const pA = await storage.createProject('Pin-A')
+  const pB = await storage.createProject('Pin-B')
+  const pC = await storage.createProject('Pin-C')
+  let pD // создаётся в тесте «новые проекты не закреплены»
+  const pIds = [pA.id, pB.id, pC.id]
+  const pNames = async () =>
+    (await storage.listProjects())
+      .filter((p) => pIds.includes(p.id))
+      .map((p) => p.name)
+
+  await check('setProjectPinned закрепляет в верхнюю зону и пишет на диск', async () => {
+    await storage.setProjectPinned(pB.id, true)
+    let list = await storage.listProjects()
+    assert.deepEqual(await pNames(), ['Pin-B', 'Pin-A', 'Pin-C'])
+    assert.equal(list.find((p) => p.id === pB.id).pinned, true)
+    // Второй закреплённый встаёт после первого (последним среди закреплённых).
+    await storage.setProjectPinned(pC.id, true)
+    list = await storage.listProjects()
+    assert.deepEqual(await pNames(), ['Pin-B', 'Pin-C', 'Pin-A'])
+    assert.equal(list.find((p) => p.id === pC.id).pinned, true)
+  })
+
+  await check('renameProject не сбрасывает pin (метаданные записи)', async () => {
+    await storage.renameProject(pB.id, 'Pin-B2')
+    const list = await storage.listProjects()
+    const renamed = list.find((p) => p.id === pB.id)
+    assert.equal(renamed.name, 'Pin-B2')
+    assert.equal(renamed.pinned, true)
+  })
+
+  await check('reorderProjects зажимает позицию в зону pin', async () => {
+    // Закреплённый pC не выходит из зоны: попытка ниже границы — no-op для тройки.
+    await storage.reorderProjects(pC.id, 99)
+    assert.deepEqual(await pNames(), ['Pin-B2', 'Pin-C', 'Pin-A'])
+    // Обычный pA не входит в зону: попытка наверх — no-op для тройки.
+    await storage.reorderProjects(pA.id, 0)
+    assert.deepEqual(await pNames(), ['Pin-B2', 'Pin-C', 'Pin-A'])
+  })
+
+  await check('pin и lock независимы, новые проекты не закреплены', async () => {
+    await storage.setProjectLocked(pB.id, true)
+    let list = await storage.listProjects()
+    assert.equal(list.find((p) => p.id === pB.id).locked, true)
+    assert.equal(list.find((p) => p.id === pB.id).pinned, true)
+    pD = await storage.createProject('Pin-D')
+    list = await storage.listProjects()
+    assert.equal(list.find((p) => p.id === pD.id).pinned, false)
+    await storage.setProjectPinned(pB.id, false)
+    await storage.setProjectLocked(pB.id, false)
+  })
+
+  await check('setProjectPinned валидирует аргументы', async () => {
+    await assert.rejects(() => storage.setProjectPinned(pB.id, 'yes'), /boolean/)
+    await assert.rejects(() => storage.setProjectPinned('no-such-id', true), /не найден/)
+  })
+
+  await check('после pin-тестов тестовые проекты удаляются', async () => {
+    for (const id of [...pIds, pD.id]) await storage.deleteProject(id)
+    const after = await storage.listProjects()
+    assert.ok(!after.some((p) => [...pIds, pD.id].includes(p.id)), 'четвёрка удалена из индекса')
+  })
+
   // --- Запросы проекта: save/list/delete ---
   const requestsProject = await storage.createProject('Хранилище запросов')
   const fullRequest = {
