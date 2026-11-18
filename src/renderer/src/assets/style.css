@@ -358,6 +358,9 @@ select:disabled {
   border-right: 1px solid var(--border);
   color: var(--text-secondary);
   white-space: nowrap;
+  /* Текст вкладок не выделяется и не перехватывает жесты — иначе мешает перетаскиванию. */
+  user-select: none;
+  touch-action: none;
 }
 
 .tab.active {
@@ -609,6 +612,34 @@ select:disabled {
 .tab-close:hover {
   background: var(--bg-hover);
   color: var(--danger);
+}
+
+.tab-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.tab-pin:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+/* Перетаскиваемая вкладка приподнята над соседями, полоса показывает захват. */
+.tab.dragging {
+  position: relative;
+  z-index: 1;
+  opacity: 0.75;
+  transform: scale(1.03);
+  box-shadow: var(--shadow);
+  cursor: grabbing;
+}
+
+.tabs-strip.is-dragging {
+  cursor: grabbing;
 }
 
 .tab-add {

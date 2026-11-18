@@ -3,7 +3,7 @@
 // Пункты: {label, disabled?, title?, action?}. Позиционируется у курсора с clamp к краям окна.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-defineProps({
+const props = defineProps({
   items: { type: Array, default: () => [] }
 })
 
@@ -11,10 +11,10 @@ const visible = ref(false)
 const position = ref({ x: 0, y: 0 })
 const positionStyle = computed(() => ({ left: `${position.value.x}px`, top: `${position.value.y}px` }))
 
-// ~200px ширина и ~34px на пункт — для clamp при открытии у правого/нижнего края.
+// ~200px ширины и ~34px на пункт — оценка для clamp при открытии у правого/нижнего края.
 function openAt(x, y) {
   const width = 200
-  const height = 34 * 2 + 8
+  const height = 34 * Math.max(2, props.items.length) + 8
   position.value = {
     x: Math.max(4, Math.min(x, window.innerWidth - width - 8)),
     y: Math.max(4, Math.min(y, window.innerHeight - height - 8))

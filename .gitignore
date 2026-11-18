@@ -36,6 +36,9 @@ coverage/
 .stylelintcache
 *.tsbuildinfo
 
+# Снапшоты и логи Playwright MCP (диагностика UI)
+.playwright-mcp/
+
 # Локальные скиллы агентов
 .agents/
 
