@@ -61,6 +61,10 @@ const menuItems = computed(() => {
       action: () => tabs.saveTab(tab.id, dialog.value)
     },
     {
+      label: 'Переименовать',
+      action: () => renameTab(tab)
+    },
+    {
       label: 'Клонировать',
       action: () => tabs.cloneTab(tab.id)
     },
@@ -81,6 +85,19 @@ const menuItems = computed(() => {
     }
   ]
 })
+
+// Переименование вкладки: тот же prompt, что у переименования проектов и сохранения.
+// Отмена и пустое имя ничего не меняют; валидация и dirty — в экшене стора.
+async function renameTab(tab) {
+  const name = await dialog.value.prompt({
+    title: 'Переименовать вкладку',
+    label: 'Имя вкладки',
+    value: tab.name,
+    confirmText: 'Переименовать'
+  })
+  if (!name) return
+  tabs.renameTab(tab.id, name)
+}
 
 // Клик активирует вкладку. После drag ложный click не страшен: без capture он
 // уходит на общего предка (строку), а на самой вкладке — только если жест
@@ -205,7 +222,11 @@ onBeforeUnmount(endDrag)
         @pointerdown="onTabPointerDown(tab, $event)"
       >
         <span class="tab-method" :class="`method-${tab.method}`">{{ tab.method }}</span>
-        <span class="tab-name">{{ tab.name }}</span>
+        <span
+          class="tab-name"
+          :title="`${tab.name} (двойной клик — переименовать)`"
+          @dblclick.stop="renameTab(tab)"
+        >{{ tab.name }}</span>
         <span v-if="tab.dirty" class="tab-dirty" title="Есть несохранённые изменения">•</span>
         <span
           v-if="tab.pinned"

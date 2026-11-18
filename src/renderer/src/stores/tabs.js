@@ -134,6 +134,16 @@ export const useTabsStore = defineStore('tabs', {
       tab.pinned = !tab.pinned
       this.normalizeOrder()
     },
+    // Переименование вкладки. Имя — часть снимка запроса, поэтому rename помечает
+    // вкладку dirty: точка исчезнет после сохранения, до тех пор запрос не затронут.
+    renameTab(id, name) {
+      const tab = this.tabs.find((t) => t.id === id)
+      const trimmed = String(name ?? '').trim()
+      if (!tab || !trimmed) return false
+      tab.name = trimmed
+      tab.dirty = true
+      return true
+    },
     updateActive(patch) {
       const tab = this.activeTab
       if (tab) {
