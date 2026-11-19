@@ -19,7 +19,12 @@
 - `npm run dist` — electron-builder mac (`CSC_IDENTITY_AUTO_DISCOVERY=false`, `identity: null` — подпись отключена)
 - `node scripts/smoke.mjs` — смоук-тесты (чистый Node, без Electron, 104 проверки): парсер/генератор curl, CRUD/блокировка/закрепление/перемещение хранилища, переменные, импорт Postman-коллекции, MCP-сервер (транспорт/токен/инструменты)
 - `node scripts/echo-server.mjs` — локальный echo-сервер на порту 4545 для ручного e2e
+- `npm run check-version` — guard: версия package.json строго больше последнего git-тега (перед сборкой релиза)
+- `npm run release -- patch|minor|major` — релиз: guard → npm version (бамп package.json + коммит + аннотированный тег vX.Y.Z)
 - Требование среды: Node ≥ 18
+
+## Релизы (тег ↔ версия)
+Единый источник версии — `package.json`: electron-builder берёт её для сборки, `serverInfo` MCP-сервера — из того же файла, git-тег создаётся из неё же командой `npm version`. Рассинхрон исключается тем, что бамп и тег делаются одной командой на чистом дереве. Flow: на `master` после мержа develop → `npm run release -- patch|minor|major` → `npm run dist` → `git push --follow-tags origin master`. Бамп в `develop` без тега — `npm version patch --no-git-tag-version`.
 
 ## Архитектура (границы слоёв — не нарушать)
 ```

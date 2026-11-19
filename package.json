@@ -12,7 +12,9 @@
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-vite build && electron-builder --mac",
     "dist:win": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-vite build && electron-builder --win",
     "dist:linux": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-vite build && electron-builder --linux",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "check-version": "node scripts/check-version.mjs",
+    "release": "node scripts/release.mjs"
   },
   "build": {
     "appId": "com.romchik.request-lite",
