@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 let rootPath = null
 let settingsCache = null
 
-const DEFAULT_SETTINGS = { theme: 'dark' }
+const DEFAULT_SETTINGS = { theme: 'dark', mcp: { enabled: false, port: 45460, token: null } }
 
 export function initStorage(root) {
   rootPath = root
@@ -398,7 +398,12 @@ export async function setActiveEnvironment(projectId, environmentId) {
 
 async function readSettingsFromDisk() {
   const stored = await readJson(settingsPath(), {})
-  return { ...DEFAULT_SETTINGS, ...stored }
+  // mcp мерджится глубже: старый settings.json без секции (или с частичной) получает дефолты.
+  return {
+    ...DEFAULT_SETTINGS,
+    ...stored,
+    mcp: { ...DEFAULT_SETTINGS.mcp, ...(stored.mcp ?? {}) }
+  }
 }
 
 // Синхронный доступ для preload (sendSync при старте окна, тема до первого кадра).
