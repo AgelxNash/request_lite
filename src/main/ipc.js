@@ -1,18 +1,28 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
 // (см. src/preload/index.js). Префиксы: projects:*, requests:*, environments:*,
-// settings:*, http:*, postman:*, data:*, clipboard:*, mcp:*.
+// settings:*, http:*, postman:*, data:*, clipboard:*, mcp:*, mocks:*.
+// Push-каналы: menu:* (из меню), mocks:log (запись журнала мок-сервера).
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { readFile } from 'node:fs/promises'
 import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
 import { getMcpStatus, applyMcpConfig } from './mcp.js'
+import {
+  getMockStatus,
+  startMockServer,
+  stopMockServer,
+  applyMockConfig,
+  getMockLog,
+  clearMockLog,
+  setLogListener
+} from './mock.js'
 
 // Открывает папку хранилища в системном файловом менеджере (используется и меню).
 export function openStorageFolder() {
   return shell.openPath(storage.getStorageRoot())
 }
 
-export function registerIpc() {
+export function registerIpc(getMainWindow = () => null) {
   ipcMain.handle('projects:list', () => storage.listProjects())
   ipcMain.handle('projects:create', (_event, name) => storage.createProject(name))
   ipcMain.handle('projects:rename', (_event, { id, name }) => storage.renameProject(id, name))
@@ -116,5 +126,40 @@ export function registerIpc() {
   ipcMain.handle('http:cancel', (_event, requestId) => {
     cancelRequest(requestId)
     return true
+  })
+
+  // Мок-сервер: CRUD мок-проектов (без locked/pinned — осознанное ограничение v1).
+  ipcMain.handle('mocks:listProjects', () => storage.listMockProjects())
+  ipcMain.handle('mocks:createProject', (_event, name) => storage.createMockProject(name))
+  ipcMain.handle('mocks:renameProject', (_event, { id, name }) => storage.renameMockProject(id, name))
+  ipcMain.handle('mocks:deleteProject', (_event, id) => storage.deleteMockProject(id))
+  ipcMain.handle('mocks:getProject', (_event, id) => storage.getMockProject(id))
+  // Сохранение конфигурации: если сервер запущен на этом же мок-проекте —
+  // конфиг применяется к слушателю на лету, без рестарта.
+  ipcMain.handle('mocks:saveProject', async (_event, { id, config }) => {
+    const stored = await storage.saveMockProjectConfig(id, config)
+    const status = getMockStatus()
+    if (status.state === 'running' && status.projectId === id) await applyMockConfig(stored)
+    return stored
+  })
+
+  // Мок-сервер: жизненный цикл и журнал.
+  ipcMain.handle('mocks:getStatus', () => getMockStatus())
+  // Старт не бросает исключение наверх: неизвестный проект/невалидный порт/занятый порт
+  // приходят как статус 'error' — их решает UI (паттерн mcp:setConfig).
+  ipcMain.handle('mocks:start', async (_event, { projectId, port }) => {
+    try {
+      return await startMockServer({ projectId, port })
+    } catch (err) {
+      return { state: 'error', message: String(err.message ?? err) }
+    }
+  })
+  ipcMain.handle('mocks:stop', () => stopMockServer())
+  ipcMain.handle('mocks:getLog', () => getMockLog())
+  ipcMain.handle('mocks:clearLog', () => clearMockLog())
+
+  // Живой журнал: каждая принятая запросом запись летит в открытое окно (push mocks:log).
+  setLogListener((entry) => {
+    getMainWindow()?.webContents?.send('mocks:log', entry)
   })
 }
