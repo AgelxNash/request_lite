@@ -53,6 +53,11 @@ const api = {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch) => ipcRenderer.invoke('settings:set', patch)
   },
+  mcp: {
+    getStatus: () => ipcRenderer.invoke('mcp:getStatus'),
+    // {enabled?, port?, regenerateToken?} → свежий статус после применения
+    setConfig: (patch) => ipcRenderer.invoke('mcp:setConfig', patch)
+  },
   openDataFolder: () => ipcRenderer.invoke('data:openFolder'),
   http: {
     // requestId генерирует renderer и знает его ДО отправки — иначе Cancel во время
@@ -66,6 +71,7 @@ const api = {
     ipcRenderer.on('menu:save-request', () => callback('save-request'))
     ipcRenderer.on('menu:import-curl', () => callback('import-curl'))
     ipcRenderer.on('menu:import-postman', () => callback('import-postman'))
+    ipcRenderer.on('menu:settings', () => callback('settings'))
     ipcRenderer.on('menu:about', () => callback('about'))
   }
 }

@@ -1,8 +1,9 @@
 // Точка входа main-процесса: окно, меню, инициализация хранилища и IPC.
 import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'node:path'
-import { initStorage, bootstrap } from './storage.js'
+import { initStorage, bootstrap, getSettings } from './storage.js'
 import { registerIpc, openStorageFolder } from './ipc.js'
+import { applyMcpConfig, stopMcpServer } from './mcp.js'
 
 // __dirname доступен в ESM-выводе electron-vite (шим инжектится при сборке)
 
@@ -67,6 +68,11 @@ function buildMenu() {
           label: 'Импорт коллекции Postman',
           click: () => mainWindow?.webContents.send('menu:import-postman')
         },
+        {
+          label: 'Настройки',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => mainWindow?.webContents.send('menu:settings')
+        },
         { label: 'Open data folder', click: () => openStorageFolder() }
       ]
     },
@@ -86,6 +92,9 @@ app.whenReady().then(async () => {
   initStorage(join(app.getPath('userData'), 'storage'))
   await bootstrap()
   registerIpc()
+  // MCP-сервер поднимается после хранилища: применяем сохранённую конфигурацию
+  // (выключен по умолчанию — слушателя без явного включения нет).
+  await applyMcpConfig(await getSettings())
   buildMenu()
   createWindow()
 
@@ -96,4 +105,9 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Останавливаем MCP-слушателя при выходе (не ждём — процесс всё равно завершается).
+app.on('will-quit', () => {
+  void stopMcpServer()
 })

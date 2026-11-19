@@ -14,6 +14,7 @@ const requestName = await import('../src/renderer/src/lib/request-name.js')
 const variables = await import('../src/renderer/src/lib/variables.js')
 const curl = await import('../src/renderer/src/lib/curl.js')
 const postman = await import('../src/renderer/src/lib/postman.js')
+const mcp = await import('../src/main/mcp.js')
 
 let passed = 0
 
@@ -653,22 +654,31 @@ try {
   })
 
   // --- Настройки ---
-  await check('getSettings по умолчанию возвращает тёмную тему', async () => {
+  await check('getSettings по умолчанию: тёмная тема и дефолты секции mcp', async () => {
     const settings = await storage.getSettings()
-    assert.deepEqual(settings, { theme: 'dark' })
+    assert.deepEqual(settings, { theme: 'dark', mcp: { enabled: false, port: 45460, token: null } })
   })
 
   await check('setSettings сохраняет тему и другие ключи не теряются', async () => {
     await storage.setSettings({ theme: 'light' })
     await storage.setSettings({ futureSetting: 42 })
     const settings = await storage.getSettings()
-    assert.deepEqual(settings, { theme: 'light', futureSetting: 42 })
+    assert.deepEqual(settings, {
+      theme: 'light',
+      futureSetting: 42,
+      mcp: { enabled: false, port: 45460, token: null }
+    })
     const onDisk = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'))
     assert.equal(onDisk.theme, 'light')
+    assert.deepEqual(onDisk.mcp, { enabled: false, port: 45460, token: null })
   })
 
   await check('getSettingsSync (для preload) отдаёт актуальный кэш', () => {
-    assert.deepEqual(storage.getSettingsSync(), { theme: 'light', futureSetting: 42 })
+    assert.deepEqual(storage.getSettingsSync(), {
+      theme: 'light',
+      futureSetting: 42,
+      mcp: { enabled: false, port: 45460, token: null }
+    })
   })
 
   // --- HTTP: сборка запроса (buildRequest) ---
@@ -1252,6 +1262,234 @@ try {
     })
   } finally {
     await closeServer()
+  }
+
+  // --- MCP-сервер: транспорт, токен и инструменты (src/main/mcp.js) ---
+  // Отдельный корень хранилища: проверяем дефолты настроек на «старом» settings.json без секции mcp.
+
+  const mcpRoot = await mkdtemp(join(tmpdir(), 'postman-lite-smoke-mcp-'))
+  storage.initStorage(mcpRoot)
+  await storage.bootstrap()
+
+  const takeFreePort = async () => {
+    const s = createServer()
+    await new Promise((resolve) => s.listen(0, '127.0.0.1', resolve))
+    const port = s.address().port
+    await new Promise((resolve) => s.close(resolve))
+    return port
+  }
+
+  const mcpPort = await takeFreePort()
+
+  try {
+    await check('Настройки: старый settings.json без секции mcp получает дефолты', async () => {
+      const settings = await storage.getSettings()
+      assert.deepEqual(settings.mcp, { enabled: false, port: 45460, token: null })
+    })
+
+    await check('Включение поднимает слушателя на 127.0.0.1, генерирует и сохраняет токен', async () => {
+      const status = await mcp.applyMcpConfig({ mcp: { enabled: true, port: mcpPort, token: null } })
+      assert.equal(status.state, 'running')
+      assert.equal(status.address, `http://127.0.0.1:${mcpPort}/mcp`)
+      assert.ok(status.token)
+      assert.equal((await storage.getSettings()).mcp.token, status.token)
+    })
+
+    const mcpToken = (await storage.getSettings()).mcp.token
+    const mcpCall = async (body, token) =>
+      fetch(`http://127.0.0.1:${mcpPort}/mcp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(body)
+      })
+    const mcpTool = async (name, args) => {
+      const res = await mcpCall(
+        { jsonrpc: '2.0', id: Math.random(), method: 'tools/call', params: { name, arguments: args } },
+        mcpToken
+      )
+      const envelope = await res.json()
+      return JSON.parse(envelope.result.content[0].text)
+    }
+
+    await check('Токен обязателен: без него и с неверным — 401, с верным — ответ', async () => {
+      assert.equal((await mcpCall({ jsonrpc: '2.0', id: 1, method: 'ping' })).status, 401)
+      assert.equal((await mcpCall({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'nope')).status, 401)
+      const res = await mcpCall({ jsonrpc: '2.0', id: 1, method: 'ping' }, mcpToken)
+      assert.equal(res.status, 200)
+      assert.deepEqual(await res.json(), { jsonrpc: '2.0', id: 1, result: {} })
+    })
+
+    await check('Рукопожатие initialize (включая более новую ревизию клиента), уведомление 202, неизвестный метод', async () => {
+      let res = await mcpCall(
+        { jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-03-26', clientInfo: { name: 'smoke', version: '0' } } },
+        mcpToken
+      )
+      const init = await res.json()
+      assert.equal(init.result.protocolVersion, '2025-06-18')
+      assert.ok(init.result.capabilities.tools)
+      assert.equal(init.result.serverInfo.name, 'request-lite')
+      // Клиент с более новой ревизией получает последнюю поддерживаемую нами (а не ошибку):
+      // по спеке согласование — ответ сервера, решение о совместимости за клиентом.
+      res = await mcpCall(
+        { jsonrpc: '2.0', id: 6, method: 'initialize', params: { protocolVersion: '2025-11-25' } },
+        mcpToken
+      )
+      assert.equal((await res.json()).result.protocolVersion, '2025-06-18')
+      res = await mcpCall({ jsonrpc: '2.0', method: 'notifications/initialized' }, mcpToken)
+      assert.equal(res.status, 202)
+      res = await mcpCall({ jsonrpc: '2.0', id: 3, method: 'no/such' }, mcpToken)
+      assert.equal((await res.json()).error.code, -32601)
+    })
+
+    await check('tools/list отдаёт все инструменты с именем, описанием и схемой входа', async () => {
+      const res = await mcpCall({ jsonrpc: '2.0', id: 5, method: 'tools/list' }, mcpToken)
+      const tools = (await res.json()).result.tools
+      assert.equal(tools.length, 12)
+      assert.ok(tools.every((tool) => tool.name && tool.description && tool.inputSchema))
+    })
+
+    await check('Инструменты чтения: список проектов, «не найдено» для чужого id', async () => {
+      const project = await storage.createProject('MCP Demo')
+      const out = await mcpTool('list_projects', {})
+      assert.equal(out.ok, true)
+      assert.equal(out.data.find((p) => p.id === project.id).name, 'MCP Demo')
+      const missing = await mcpTool('get_request', { projectId: project.id, requestId: 'nope' })
+      assert.equal(missing.ok, false)
+      assert.match(missing.error.message, /не найден/)
+    })
+
+    await check('Мутации: создание/обновление/окружение; заблокированный защищён', async () => {
+      const project = (await storage.listProjects())[0]
+      await storage.saveEnvironment(project.id, { id: 'env-mcp', name: 'Local', variables: [] })
+      let out = await mcpTool('create_request', {
+        projectId: project.id,
+        request: { name: 'Echo', method: 'GET', url: 'http://x/echo' }
+      })
+      assert.equal(out.ok, true)
+      const requestId = out.data.find((r) => r.name === 'Echo').id
+      out = await mcpTool('update_request', {
+        projectId: project.id,
+        request: { id: requestId, name: 'Echo-2', url: 'http://x/echo2' }
+      })
+      assert.equal(out.ok, true)
+      assert.equal(out.data.find((r) => r.id === requestId).name, 'Echo-2')
+      out = await mcpTool('set_active_environment', { projectId: project.id, environmentId: 'env-mcp' })
+      assert.equal(out.ok, true)
+      await storage.setRequestLocked(project.id, requestId, true)
+      const upd = await mcpTool('update_request', { projectId: project.id, request: { id: requestId, name: 'Hacked' } })
+      assert.equal(upd.ok, false)
+      assert.match(upd.error.message, /заблокирован/)
+      const del = await mcpTool('delete_request', { projectId: project.id, requestId })
+      assert.equal(del.ok, false)
+      assert.match(del.error.message, /заблокирован/)
+      await storage.setRequestLocked(project.id, requestId, false)
+      out = await mcpTool('delete_request', { projectId: project.id, requestId })
+      assert.equal(out.ok, true)
+    })
+
+    // Мини echo-сервер для инструментов отправки (JSON-эхо + большой маршрут).
+    const echo = createServer((req, res) => {
+      if (req.url === '/big') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' })
+        res.end('x'.repeat(300 * 1024))
+        return
+      }
+      const chunks = []
+      req.on('data', (chunk) => chunks.push(chunk))
+      req.on('end', () =>
+        res.end(
+          JSON.stringify({
+            url: req.url,
+            method: req.method,
+            body: Buffer.concat(chunks).toString('utf8'),
+            header: req.headers['x-mcp'] ?? null
+          })
+        )
+      )
+    })
+    await new Promise((resolve) => echo.listen(0, '127.0.0.1', resolve))
+    const echoBase = `http://127.0.0.1:${echo.address().port}`
+
+    try {
+      await check('send_request подставляет {{var}} активного окружения; усечение и сетевые ошибки', async () => {
+        const project = (await storage.listProjects())[0]
+        await storage.saveEnvironment(project.id, {
+          id: 'env-mcp',
+          name: 'Local',
+          variables: [{ key: 'baseUrl', value: echoBase, enabled: true }]
+        })
+        await storage.setActiveEnvironment(project.id, 'env-mcp')
+        let out = await mcpTool('create_request', {
+          projectId: project.id,
+          request: {
+            name: 'EchoApi',
+            method: 'POST',
+            url: '{{baseUrl}}/api',
+            headers: [{ key: 'X-Mcp', value: 'zz', enabled: true }],
+            body: { type: 'text', text: 'hi' }
+          }
+        })
+        const requestId = out.data.find((r) => r.name === 'EchoApi').id
+        out = await mcpTool('send_request', { projectId: project.id, requestId })
+        assert.equal(out.ok, true)
+        assert.equal(out.data.status, 200)
+        const echoed = JSON.parse(out.data.body)
+        assert.equal(echoed.url, '/api')
+        assert.equal(echoed.method, 'POST')
+        assert.equal(echoed.body, 'hi')
+        assert.equal(echoed.header, 'zz')
+        out = await mcpTool('send_adhoc', { method: 'GET', url: `${echoBase}/big` })
+        assert.equal(out.ok, true)
+        assert.equal(out.data.truncated, true)
+        assert.ok(out.data.actualSize >= 300 * 1024)
+        assert.ok(out.data.body.length <= 100 * 1024)
+        const fail = await mcpTool('send_adhoc', { url: 'http://127.0.0.1:1/nope' })
+        assert.equal(fail.ok, false)
+        assert.equal(fail.error.code, 'NETWORK')
+      })
+
+      await check('curl-инструменты: экспорт и импорт без записи на диск', async () => {
+        const project = (await storage.listProjects())[0]
+        let out = await mcpTool('create_request', {
+          projectId: project.id,
+          request: { name: 'CurlSrc', method: 'POST', url: 'https://api.example.com/token', body: { type: 'text', text: 'q=1' } }
+        })
+        const requestId = out.data.find((r) => r.name === 'CurlSrc').id
+        out = await mcpTool('export_curl', { projectId: project.id, requestId })
+        assert.equal(out.ok, true)
+        assert.match(out.data, /^curl /)
+        out = await mcpTool('import_curl', { curl: `curl -X POST https://x.dev/p -H 'X-K: v' -d 'a=1'` })
+        assert.equal(out.ok, true)
+        assert.equal(out.data.method, 'POST')
+        assert.equal(out.data.url, 'https://x.dev/p')
+      })
+    } finally {
+      echo.closeAllConnections()
+      await new Promise((resolve) => echo.close(resolve))
+    }
+
+    await check('Смена порта на лету, занятый порт — «ошибка», выключение закрывает порт', async () => {
+      const newPort = await takeFreePort()
+      let status = await mcp.applyMcpConfig({ mcp: { enabled: true, port: newPort, token: mcpToken } })
+      assert.equal(status.state, 'running')
+      assert.equal(status.port, newPort)
+      const old = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, { method: 'POST' }).catch(() => null)
+      assert.equal(old, null, 'старый порт закрыт')
+      const blocker = createServer()
+      await new Promise((resolve) => blocker.listen(0, '127.0.0.1', resolve))
+      const busyPort = blocker.address().port
+      status = await mcp.applyMcpConfig({ mcp: { enabled: true, port: busyPort, token: mcpToken } })
+      assert.equal(status.state, 'error')
+      assert.match(status.message, /занят/)
+      assert.equal((await storage.getSettings()).mcp.enabled, true, 'настройка включения не сбрасывается')
+      status = await mcp.applyMcpConfig({ mcp: { enabled: false, port: busyPort, token: mcpToken } })
+      assert.equal(status.state, 'stopped')
+      blocker.closeAllConnections()
+      await new Promise((resolve) => blocker.close(resolve))
+    })
+  } finally {
+    await mcp.stopMcpServer()
+    await rm(mcpRoot, { recursive: true, force: true })
   }
 
   console.log(`\nSMOKE OK: ${passed} проверок пройдено`)

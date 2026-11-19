@@ -1,10 +1,11 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
 // (см. src/preload/index.js). Префиксы: projects:*, requests:*, environments:*,
-// settings:*, http:*, postman:*, data:*, clipboard:*.
+// settings:*, http:*, postman:*, data:*, clipboard:*, mcp:*.
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { readFile } from 'node:fs/promises'
 import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
+import { getMcpStatus, applyMcpConfig } from './mcp.js'
 
 // Открывает папку хранилища в системном файловом менеджере (используется и меню).
 export function openStorageFolder() {
@@ -83,6 +84,18 @@ export function registerIpc() {
   // Блокирующий канал для preload: начальные настройки до первого кадра (тема без вспышки).
   ipcMain.on('settings:getInitial', (event) => {
     event.returnValue = storage.getSettingsSync()
+  })
+
+  // MCP-сервер: статус для страницы настроек и применение конфигурации с рестартом слушателя.
+  ipcMain.handle('mcp:getStatus', () => getMcpStatus())
+  ipcMain.handle('mcp:setConfig', async (_event, patch) => {
+    const current = await storage.getSettings()
+    const mcp = { ...current.mcp }
+    if (typeof patch?.enabled === 'boolean') mcp.enabled = patch.enabled
+    if (patch?.port !== undefined) mcp.port = Number(patch.port) // невалидный — упадёт в applyMcpConfig в ошибку статуса
+    if (patch?.regenerateToken === true) mcp.token = null // applyMcpConfig сгенерирует новый
+    const settings = await storage.setSettings({ mcp })
+    return applyMcpConfig(settings)
   })
 
   ipcMain.handle('data:openFolder', async () => {
