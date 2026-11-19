@@ -12,6 +12,10 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkgVersion = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
 
+// Целевая версия: первый аргумент CLI (release.mjs передаёт версию ПОСЛЕ бампа) —
+// иначе recovery с существующего рассинхрона (версия отстаёт от тегов) блокировался бы.
+const targetVersion = process.argv[2] ?? pkgVersion
+
 let tags
 try {
   tags = execSync('git tag --list', { cwd: root, encoding: 'utf8' })
@@ -46,10 +50,10 @@ const maxTag = tags.reduce(
   null
 )
 
-if (maxTag !== null && compare(parse(pkgVersion), parse(maxTag)) <= 0) {
-  console.error(`Рассинхрон: package.json ${pkgVersion} <= последнего тега ${maxTag}.`)
+if (maxTag !== null && compare(parse(targetVersion), parse(maxTag)) <= 0) {
+  console.error(`Рассинхрон: целевая версия ${targetVersion} <= последнего тега ${maxTag}.`)
   console.error('Поднимите версию перед релизом: npm run release -- patch|minor|major (или npm version X.Y.Z).')
   process.exit(1)
 }
 
-console.log(maxTag ? `OK: package.json ${pkgVersion} > последнего тега ${maxTag}` : `OK: git-тегов нет, версия ${pkgVersion} свободна`)
+console.log(maxTag ? `OK: версия ${targetVersion} > последнего тега ${maxTag}` : `OK: git-тегов нет, версия ${targetVersion} свободна`)
