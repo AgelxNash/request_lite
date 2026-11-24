@@ -39,6 +39,9 @@ coverage/
 # Снапшоты и логи Playwright MCP (диагностика UI)
 .playwright-mcp/
 
+# Планы режима планирования ZCode
+.zcode/plans/
+
 # Локальные скиллы агентов
 .agents/
 

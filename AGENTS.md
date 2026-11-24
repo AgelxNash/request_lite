@@ -17,7 +17,7 @@
 - `npm run dev` — electron-vite dev (hot reload)
 - `npm run build` — сборка
 - `npm run dist` — electron-builder mac (`CSC_IDENTITY_AUTO_DISCOVERY=false`, `identity: null` — подпись отключена)
-- `node scripts/smoke.mjs` — смоук-тесты (чистый Node, без Electron, 104 проверки): парсер/генератор curl, CRUD/блокировка/закрепление/перемещение хранилища, переменные, импорт Postman-коллекции, MCP-сервер (транспорт/токен/инструменты)
+- `node scripts/smoke.mjs` — смоук-тесты (чистый Node, без Electron, 114 проверок): парсер/генератор curl, сниппеты кода, CRUD/блокировка/закрепление/перемещение хранилища, переменные, импорт Postman-коллекции, MCP-сервер (транспорт/токен/инструменты)
 - `node scripts/echo-server.mjs` — локальный echo-сервер на порту 4545 для ручного e2e
 - `npm run check-version` — guard: версия package.json строго больше последнего git-тега (перед сборкой релиза)
 - `npm run release -- patch|minor|major` — релиз: guard → npm version (бамп package.json + коммит + аннотированный тег vX.Y.Z)
@@ -35,7 +35,8 @@ src/preload/ — contextBridge → window.api.* (единственный мос
 src/renderer/src/
   stores/    — Pinia: projects.js, requests.js, tabs.js, environments.js, ui.js
   lib/       — curl.js (парсер+генератор), postman.js (импорт коллекций),
-               variables.js ({{var}}), format.js, defaults.js, request-name.js
+               variables.js ({{var}}), format.js, defaults.js, request-name.js,
+               snippets.js (генераторы сниппетов кода)
   components/— Vue-компоненты (Sidebar, ProjectList, RequestList, RequestTabs,
                RequestEditor, ResponseView, ContextMenu, SettingsPage, диалоги и т.д.)
 ```
@@ -60,10 +61,11 @@ src/renderer/src/
 - Переменные окружения `{{baseUrl}}` подставляются в URL/params/headers/body только в момент отправки; неразрешённые остаются как есть.
 - Auth (Bearer/Basic/API-key) конвертируется в заголовки/query на момент отправки, а не хранится как headers.
 - curl-парсер — собственный (`lib/curl.js`): shell-токенизация + флаги `-X, -H, -d/--data-raw/--data-binary/--form, -u, -b, --json, -G, --url`; при `-d` метод по умолчанию POST. Генератор curl — с корректным экранированием кавычек.
+- Сниппеты кода (`lib/snippets.js`: Fetch, Axios, Python requests; пункт меню вкладки «Сгенерировать код») строятся на общих с curl помощниках экспорта — `buildUrlForExport` и `exportHeaders` в `lib/curl.js`: правила переноса URL и заголовков меняются в одном месте, вывод cURL при этом не меняется. Переменные `{{var}}` — литерально, секреты не маскируются; тело json/text — сырой строкой без ре-сериализации; дубли имён заголовков схлопываются (побеждает последний).
 - Импорт Postman (v2.x JSON): коллекция → новый проект; папки → префикс `Folder / Request`; raw/urlencoded/formdata (без файлов); `collection.variable` → окружение с именем коллекции.
 - Блокировка (🔒) защищает содержимое и удаление, не позицию: заблокированный не перетаскивается, но сдвигается при drag других. Закрепление (📌) фиксирует позицию: закреплённый не выносится из верхней зоны. Флаги независимы.
 
 ## Верификация перед сдачей
 1. `node scripts/smoke.mjs` должен проходить.
 2. `npm run dev` — окно запускается.
-3. Ручной e2e при изменениях UI/IPC: echo-сервер → создать проект/окружение → GET/POST → save → переоткрыть (persist) → drag/закрепление затронутых списков → перезапуск (persist порядка и флагов) → curl-импорт/экспорт → импорт Postman-коллекции. При изменениях MCP дополнительно: включить сервер на странице настроек (меню «Файл» → «Настройки») → подключить ИИ-клиент по фрагменту из UI → tools/list → send_request с `{{baseUrl}}` → заблокированный запрос агентом не меняется.
+3. Ручной e2e при изменениях UI/IPC: echo-сервер → создать проект/окружение → GET/POST → save → переоткрыть (persist) → drag/закрепление затронутых списков → перезапуск (persist порядка и флагов) → curl-импорт/экспорт → импорт Postman-коллекции. При изменениях сниппетов кода дополнительно: ПКМ по вкладке → «Сгенерировать код» → переключить Fetch/Axios/Python → «Копировать» → выполнить сниппет против echo-сервера и сверить метод, URL, заголовки и тело с отправкой из приложения. При изменениях MCP дополнительно: включить сервер на странице настроек (меню «Файл» → «Настройки») → подключить ИИ-клиент по фрагменту из UI → tools/list → send_request с `{{baseUrl}}` → заблокированный запрос агентом не меняется.
