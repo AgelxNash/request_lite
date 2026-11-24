@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
+import { runInNewContext } from 'node:vm'
 
 const storage = await import('../src/main/storage.js')
 const http = await import('../src/main/http.js')
@@ -13,6 +14,7 @@ const defaults = await import('../src/renderer/src/lib/defaults.js')
 const requestName = await import('../src/renderer/src/lib/request-name.js')
 const variables = await import('../src/renderer/src/lib/variables.js')
 const curl = await import('../src/renderer/src/lib/curl.js')
+const snippets = await import('../src/renderer/src/lib/snippets.js')
 const postman = await import('../src/renderer/src/lib/postman.js')
 const mcp = await import('../src/main/mcp.js')
 const mock = await import('../src/main/mock.js')
@@ -1226,6 +1228,80 @@ try {
       assert.ok(!getWithBody.includes('-d'), 'GET не несёт тела')
     })
 
+    // Characterize: точный вывод generateCurl на момент выноса общих помощников экспорта
+    // (lib/snippets.js пользуется ими же). Строки сняты с реализации до её правки.
+    await check('generateCurl: characterize — точный вывод (порядок -H, авто Content-Type, -u, query)', () => {
+      assert.equal(
+        curl.generateCurl({
+          method: 'POST',
+          url: '{{baseUrl}}/users',
+          params: [{ id: 'p1', key: 'page', value: '2', enabled: true }],
+          headers: [{ id: 'h1', key: 'X-Note', value: `it's fine`, enabled: true }],
+          body: { type: 'json', json: '{"name":"Ann"}', form: [], urlencoded: [], text: '' },
+          auth: { type: 'bearer', token: 't-1' },
+          sslVerify: true
+        }),
+        `curl '{{baseUrl}}/users?page=2' -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer t-1' -H 'X-Note: it'\\''s fine' -d '{"name":"Ann"}'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'PUT',
+          url: 'https://x.test/items/1',
+          params: [],
+          headers: [
+            { id: 'h1', key: 'Content-Type', value: 'application/x-www-form-urlencoded; charset=utf-8', enabled: true },
+            { id: 'h2', key: 'X-Skip', value: 'no', enabled: false },
+            { id: 'h3', key: '', value: 'no-name', enabled: true }
+          ],
+          body: { type: 'urlencoded', json: '', form: [], text: '', urlencoded: [
+            { id: 'u1', key: 'a', value: '1', enabled: true },
+            { id: 'u2', key: 'b', value: 'x y', enabled: true }
+          ] },
+          auth: { type: 'apikey', key: 'X-Api-Key', value: 'k-1', placement: 'header' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/items/1' -X PUT -H 'X-Api-Key: k-1' -H 'Content-Type: application/x-www-form-urlencoded; charset=utf-8' --data-urlencode 'a=1' --data-urlencode 'b=x y'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'POST',
+          url: 'https://x.test/notes',
+          params: [],
+          headers: [{ id: 'h1', key: 'content-type', value: 'text/markdown', enabled: true }],
+          body: { type: 'text', json: '', form: [], urlencoded: [], text: 'hello' },
+          auth: { type: 'basic', username: 'user', password: 'p@ss' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/notes' -X POST -u 'user:p@ss' -H 'content-type: text/markdown' -d 'hello'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'POST',
+          url: 'https://x.test/upload?existing=1',
+          params: [{ id: 'p1', key: 'page', value: '2', enabled: true }],
+          headers: [{ id: 'h1', key: 'X-Trace', value: 'abc', enabled: true }],
+          body: { type: 'form-data', json: '', text: '', urlencoded: [], form: [
+            { id: 'f1', key: 'field1', value: 'value1', enabled: true }
+          ] },
+          auth: { type: 'apikey', key: 'api_key', value: 'k-1', placement: 'query' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/upload?existing=1&page=2&api_key=k-1' -X POST -H 'X-Trace: abc' -F 'field1=value1'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'HEAD',
+          url: 'https://x.test/ping',
+          params: [],
+          headers: [],
+          body: { type: 'json', json: '{"x":1}', form: [], urlencoded: [], text: '' },
+          auth: { type: 'bearer', token: 't-1' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/ping' -X HEAD -H 'Authorization: Bearer t-1'`
+      )
+    })
+
     await check('curl round-trip: parse(generate(snapshot)) воспроизводит запрос', () => {
       const original = {
         name: 'Demo',
@@ -1260,6 +1336,381 @@ try {
       assert.equal(clientId.value, 'ab c&d', '--data-urlencode ↔ URLSearchParams кодирование согласовано')
       assert.equal(parsed.auth.type, 'basic')
       assert.equal(parsed.auth.password, 'pass word')
+    })
+
+    // --- Сниппеты кода (lib/snippets.js) ---
+    // Текст сниппета — строки с одним завершающим переводом строки.
+    const snippetText = (...lines) => `${lines.join('\n')}\n`
+    const LANGS = ['fetch', 'axios', 'python']
+    // Канонический снимок из design D4 (change add-code-snippets).
+    const canonical = {
+      method: 'POST',
+      url: '{{baseUrl}}/users',
+      params: [],
+      headers: [],
+      body: { type: 'json', json: '{"name":"Ann"}', form: [], urlencoded: [], text: '' },
+      auth: { type: 'bearer', token: 't-1' }
+    }
+    const snippet = (snapshot, lang) => snippets.generateSnippet(snapshot, lang)
+
+    await check('generateSnippet: метод, URL с params и apikey (сценарии спеки)', () => {
+      const plain = { method: 'PUT', url: 'https://x.test/items/1', params: [], headers: [], body: { type: 'none' }, auth: { type: 'none' } }
+      assert.ok(snippet(plain, 'fetch').includes(`method: 'PUT'`))
+      assert.ok(snippet(plain, 'axios').includes(`method: 'put'`))
+      assert.ok(snippet(plain, 'python').includes(`requests.put(`))
+      assert.ok(
+        snippet({ ...plain, method: 'PROPFIND' }, 'python').includes(`requests.request('PROPFIND', url)`),
+        'метод без короткой формы — через requests.request'
+      )
+
+      const withParams = {
+        ...plain,
+        method: 'GET',
+        url: 'https://api.example.com/users',
+        params: [
+          { id: 'p1', key: 'page', value: '2', enabled: true },
+          { id: 'p2', key: 'token', value: 'abc', enabled: false }
+        ]
+      }
+      for (const lang of LANGS) {
+        const text = snippet(withParams, lang)
+        assert.ok(text.includes(`'https://api.example.com/users?page=2'`), `${lang}: params в URL`)
+        assert.ok(!text.includes('token=abc'), `${lang}: выключенный параметр не переносится`)
+      }
+
+      const apikeyQuery = { ...withParams, params: [], auth: { type: 'apikey', key: 'api_key', value: 'k-1', placement: 'query' } }
+      const apikeyHeader = { ...withParams, params: [], auth: { type: 'apikey', key: 'X-Api-Key', value: 'k-1', placement: 'header' } }
+      for (const lang of LANGS) {
+        const query = snippet(apikeyQuery, lang)
+        assert.ok(query.includes(`'https://api.example.com/users?api_key=k-1'`), `${lang}: apikey в query`)
+        assert.ok(!query.includes(`'api_key':`), `${lang}: apikey в query не дублируется заголовком`)
+        assert.ok(snippet(apikeyHeader, lang).includes(`'X-Api-Key': 'k-1'`), `${lang}: apikey заголовком`)
+        const bearer = snippet({ ...withParams, auth: { type: 'bearer', token: 't-1' } }, lang)
+        assert.ok(bearer.includes(`'Authorization': 'Bearer t-1'`), `${lang}: bearer`)
+        assert.equal(bearer.split('Authorization').length - 1, 1, `${lang}: bearer без дубликата Authorization`)
+      }
+    })
+
+    await check('generateSnippet: авто и пользовательский Content-Type, выключенные строки, GET/HEAD без тела, неизвестный язык', () => {
+      const json = { method: 'POST', url: 'https://x.test', params: [], headers: [], body: { type: 'json', json: '{"a":1}' }, auth: { type: 'none' } }
+      for (const lang of LANGS) {
+        const text = snippet(json, lang)
+        assert.equal(text.split('Content-Type').length - 1, 1, `${lang}: ровно один Content-Type`)
+        assert.ok(text.includes(`'Content-Type': 'application/json'`), `${lang}: авто Content-Type для json`)
+        for (const verb of ['GET', 'HEAD']) {
+          const bodyless = snippet({ ...json, method: verb }, lang)
+          assert.ok(!bodyless.includes('Content-Type'), `${lang}: ${verb} без авто Content-Type`)
+          assert.ok(!bodyless.includes('{"a":1}'), `${lang}: ${verb} без тела`)
+        }
+      }
+
+      const custom = snippet(
+        { ...json, headers: [{ id: 'h1', key: 'Content-Type', value: 'application/vnd.api+json', enabled: true }] },
+        'fetch'
+      )
+      assert.ok(custom.includes(`'Content-Type': 'application/vnd.api+json'`))
+      assert.ok(!custom.includes('application/json'), 'пользовательский Content-Type не дублируется автоматическим')
+
+      const noisy = snippet({ ...json, headers: [
+        { id: 'h1', key: 'X-Skip', value: 'no', enabled: false },
+        { id: 'h2', key: '', value: 'no-name', enabled: true },
+        { id: 'h3', key: 'X-Keep', value: 'yes', enabled: true }
+      ] }, 'fetch')
+      assert.ok(noisy.includes(`'X-Keep': 'yes'`))
+      assert.ok(!noisy.includes('X-Skip') && !noisy.includes('no-name'), 'выключенный заголовок и строка без имени не переносятся')
+
+      assert.throws(() => snippet(json, 'go'), /Неизвестный язык сниппета: go/)
+      assert.deepEqual(snippets.SNIPPET_LANGS.map((lang) => lang.value), LANGS)
+    })
+
+    await check('generateSnippet: экранирование литералов — JS и Python разворачиваются в исходный текст', async () => {
+      // Fetch исполняется с подменённым fetch: снимок синтаксиса и реальных значений аргументов.
+      const runStubbed = async (code) => {
+        let captured
+        await runInNewContext(`(async () => {\n${code}\n})()`, {
+          fetch: async (url, init) => {
+            captured = { url, init }
+            return { status: 200, text: async () => 'ok' }
+          },
+          console: { log () {} }
+        })
+        return captured
+      }
+      // Axios не импортируется в smoke: строка import снимается, остальное должно парситься.
+      const parseAxios = (code) => new Function(`return (async () => {\n${code.replace(/^import .*$/m, '')}\n})`)
+
+      // В значении есть ' → литерал в двойных кавычках, ровно JSON-форма.
+      const nasty = 'it\'s "quoted" \\ ${x}\n\tконец\u0001'
+      const jsonLiteral = JSON.stringify(nasty)
+      const nastySnapshot = {
+        ...canonical,
+        headers: [{ id: 'h1', key: 'X-Note', value: nasty, enabled: true }]
+      }
+      const generated = Object.fromEntries(LANGS.map((lang) => [lang, snippet(nastySnapshot, lang)]))
+      for (const lang of LANGS) {
+        assert.ok(generated[lang].includes(jsonLiteral), `${lang}: литерал JSON-формы`)
+      }
+      parseAxios(generated.axios)
+      assert.equal((await runStubbed(generated.fetch)).init.headers['X-Note'], nasty, 'fetch: литерал разворачивается в исходный текст')
+
+      // Одинарных кавычек нет → литерал в одинарных: двойные внутри не экранируются.
+      const quoted = 'a "quoted" \\ value'
+      const singleLiteral = `'a "quoted" \\\\ value'`
+      const quotedSnapshot = { ...nastySnapshot, headers: [{ id: 'h1', key: 'X-Note', value: quoted, enabled: true }] }
+      for (const lang of LANGS) {
+        assert.ok(snippet(quotedSnapshot, lang).includes(singleLiteral), `${lang}: литерал в одинарных кавычках`)
+      }
+      const captured = await runStubbed(snippet(quotedSnapshot, 'fetch'))
+      assert.equal(captured.init.headers['X-Note'], quoted)
+      assert.equal(captured.init.body, '{"name":"Ann"}', 'тело json читается без экранированных кавычек')
+    })
+
+    await check('generateSnippet: json/text сырой строкой, urlencoded и form-data парами', () => {
+      // Тело переносится байт в байт: лишний пробел и невалидный JSON не перестраиваются.
+      for (const raw of ['{"name" :"Ann"}', '{"name":"Ann",}']) {
+        const snapshot = { ...canonical, body: { type: 'json', json: raw } }
+        assert.ok(snippet(snapshot, 'fetch').includes(`body: '${raw}'`), 'fetch: тело без изменений')
+        assert.ok(snippet(snapshot, 'axios').includes(`data: '${raw}'`), 'axios: тело без изменений')
+        assert.ok(snippet(snapshot, 'python').includes(`data='${raw}'`), 'python: тело без изменений')
+      }
+      const text = { ...canonical, url: 'https://x.test', body: { type: 'text', text: 'hello world' } }
+      assert.ok(snippet(text, 'fetch').includes(`body: 'hello world'`))
+      assert.ok(snippet(text, 'python').includes(`'Content-Type': 'text/plain'`))
+
+      const urlencoded = { method: 'POST', url: 'https://x.test/token', params: [], headers: [], auth: { type: 'none' }, body: { type: 'urlencoded', urlencoded: [
+        { id: 'u1', key: 'grant_type', value: 'client_credentials', enabled: true },
+        { id: 'u2', key: 'client_id', value: 'ab c&d', enabled: true },
+        { id: 'u3', key: 'skip', value: 'x', enabled: false }
+      ] } }
+      const urlFetch = snippet(urlencoded, 'fetch')
+      assert.ok(urlFetch.includes(`body.append('grant_type', 'client_credentials')`))
+      assert.ok(urlFetch.includes(`body.append('client_id', 'ab c&d')`), 'сырые значения: кодирует клиент при выполнении')
+      assert.ok(!urlFetch.includes('skip'))
+      assert.ok(urlFetch.includes(`'Content-Type': 'application/x-www-form-urlencoded'`))
+      assert.ok(snippet(urlencoded, 'axios').includes(`data.append('client_id', 'ab c&d')`))
+      const urlPython = snippet(urlencoded, 'python')
+      assert.ok(urlPython.includes(`data={'grant_type': 'client_credentials', 'client_id': 'ab c&d'}`))
+      assert.ok(!urlPython.includes('skip'))
+
+      const formData = { ...urlencoded, url: 'https://x.test', body: { type: 'form-data', form: [
+        { id: 'f1', key: 'field1', value: 'value1', enabled: true },
+        { id: 'f2', key: 'field2', value: 'привет', enabled: true },
+        { id: 'f3', key: 'skip', value: 'x', enabled: false }
+      ] } }
+      const formFetch = snippet(formData, 'fetch')
+      assert.ok(formFetch.includes(`body.append('field1', 'value1')`))
+      assert.ok(formFetch.includes(`body.append('field2', 'привет')`))
+      assert.ok(!formFetch.includes('skip') && !formFetch.includes('Content-Type'), 'multipart: Content-Type ставит клиент')
+      assert.ok(snippet(formData, 'axios').includes(`data.append('field2', 'привет')`) && !snippet(formData, 'axios').includes('Content-Type'))
+      const formPython = snippet(formData, 'python')
+      assert.ok(formPython.includes(`files={'field1': (None, 'value1'), 'field2': (None, 'привет')}`))
+      assert.ok(!formPython.includes('skip') && !formPython.includes('Content-Type'))
+    })
+
+    await check('generateSnippet: basic-авторизация (fetch — заголовок, axios и python — опция клиента)', () => {
+      const basic = { method: 'GET', url: 'https://x.test', params: [], headers: [], body: { type: 'none' }, auth: { type: 'basic', username: 'user', password: 'p@ss' } }
+      assert.ok(snippet(basic, 'fetch').includes(`'Authorization': 'Basic dXNlcjpwQHNz'`))
+      assert.ok(snippet(basic, 'axios').includes(`auth: { username: 'user', password: 'p@ss' }`))
+      assert.ok(snippet(basic, 'python').includes(`auth=('user', 'p@ss')`))
+
+      // Кириллический логин: base64 в UTF-8 совпадает с заголовком, который собирает main.
+      const cyrillic = { ...basic, auth: { type: 'basic', username: 'логин', password: 'пароль' } }
+      const expected = http.buildRequest(cyrillic).headers.find((h) => h.key === 'Authorization').value
+      assert.ok(expected.startsWith('Basic '))
+      assert.ok(snippet(cyrillic, 'fetch').includes(`'Authorization': '${expected}'`))
+
+      // {{var}} в учётных данных: значение заранее не посчитать — btoa при выполнении сниппета.
+      const withVars = { ...basic, auth: { type: 'basic', username: '{{user}}', password: '{{pass}}' } }
+      assert.ok(snippet(withVars, 'fetch').includes(`'Authorization': 'Basic ' + btoa('{{user}}:{{pass}}')`))
+      assert.ok(snippet(withVars, 'axios').includes(`auth: { username: '{{user}}', password: '{{pass}}' }`))
+      assert.ok(snippet(withVars, 'python').includes(`auth=('{{user}}', '{{pass}}')`))
+    })
+
+    await check('generateSnippet: золотые тексты для снимка из design D4 (fetch, axios, python)', () => {
+      assert.equal(snippet(canonical, 'fetch'), snippetText(
+        "const response = await fetch('{{baseUrl}}/users', {",
+        "  method: 'POST',",
+        '  headers: {',
+        "    'Content-Type': 'application/json',",
+        "    'Authorization': 'Bearer t-1'",
+        '  },',
+        "  body: '{\"name\":\"Ann\"}'",
+        '});',
+        '',
+        'console.log(response.status, await response.text());'
+      ))
+      assert.equal(snippet(canonical, 'axios'), snippetText(
+        "import axios from 'axios';",
+        '',
+        'const response = await axios({',
+        "  method: 'post',",
+        "  url: '{{baseUrl}}/users',",
+        '  headers: {',
+        "    'Content-Type': 'application/json',",
+        "    'Authorization': 'Bearer t-1'",
+        '  },',
+        "  data: '{\"name\":\"Ann\"}'",
+        '});',
+        '',
+        'console.log(response.status, response.data);'
+      ))
+      assert.equal(snippet(canonical, 'python'), snippetText(
+        'import requests',
+        '',
+        "url = '{{baseUrl}}/users'",
+        '',
+        'headers = {',
+        "    'Content-Type': 'application/json',",
+        "    'Authorization': 'Bearer t-1'",
+        '}',
+        '',
+        "response = requests.post(url, headers=headers, data='{\"name\":\"Ann\"}')",
+        '',
+        'print(response.status_code, response.text)'
+      ))
+
+      // Сценарий спеки «Fetch с bearer и json-телом» — критерий приёмки issue #2.
+      const specCase = snippet({ ...canonical, url: 'https://api.example.com/users' }, 'fetch')
+      for (const part of [
+        `fetch('https://api.example.com/users', {`,
+        `'Authorization': 'Bearer t-1'`,
+        `'Content-Type': 'application/json'`,
+        `body: '{"name":"Ann"}'`
+      ]) {
+        assert.ok(specCase.includes(part), part)
+      }
+
+      // Без заголовков и авторизации секция headers опускается.
+      const plain = { method: 'GET', url: 'https://x.test', params: [], headers: [], body: { type: 'none' }, auth: { type: 'none' } }
+      assert.equal(snippet(plain, 'fetch'), snippetText(
+        "const response = await fetch('https://x.test', {",
+        "  method: 'GET'",
+        '});',
+        '',
+        'console.log(response.status, await response.text());'
+      ))
+      assert.ok(!snippet(plain, 'axios').includes('headers'))
+      const plainPython = snippet(plain, 'python')
+      assert.ok(!plainPython.includes('headers') && plainPython.includes('requests.get(url)'))
+    })
+
+    await check('generateSnippet: {{var}} литерально, дубли имён заголовков схлопываются (побеждает последний)', () => {
+      // Переменные не подставляются ни в одном поле — сниппет показывает запрос, а не окружение.
+      const templated = {
+        method: 'POST',
+        url: '{{baseUrl}}/users',
+        params: [{ id: 'p1', key: 'page', value: '{{page}}', enabled: true }],
+        headers: [{ id: 'h1', key: 'X-Token', value: '{{token}}', enabled: true }],
+        body: { type: 'json', json: '{"id":"{{id}}"}' },
+        auth: { type: 'bearer', token: '{{bearer}}' }
+      }
+      for (const lang of LANGS) {
+        const text = snippet(templated, lang)
+        for (const name of ['{{baseUrl}}', '{{page}}', '{{token}}', '{{id}}', '{{bearer}}']) {
+          assert.ok(text.includes(name), `${lang}: ${name} литерально`)
+        }
+      }
+
+      // Пользовательский заголовок перекрывает авторский (имя без учёта регистра).
+      const overridden = { ...canonical, url: 'https://x.test', headers: [{ id: 'h1', key: 'authorization', value: 'Custom x', enabled: true }] }
+      for (const lang of LANGS) {
+        const text = snippet(overridden, lang)
+        assert.equal((text.match(/authorization'/gi) ?? []).length, 1, `${lang}: одно имя authorization`)
+        assert.ok(text.includes(`'authorization': 'Custom x'`), `${lang}: побеждает пользовательский`)
+        assert.ok(!text.includes('Bearer t-1'))
+      }
+      const twins = { ...canonical, url: 'https://x.test', auth: { type: 'none' }, headers: [
+        { id: 'h1', key: 'X-A', value: '1', enabled: true },
+        { id: 'h2', key: 'x-a', value: '2', enabled: true }
+      ] }
+      assert.ok(snippet(twins, 'fetch').includes(`'x-a': '2'`) && !snippet(twins, 'fetch').includes(`'X-A': '1'`))
+      assert.ok(snippet(twins, 'python').includes(`'x-a': '2'`) && !snippet(twins, 'python').includes(`'X-A': '1'`))
+    })
+
+    // Fetch-сниппет исполняется как ES-модуль из data:-URL (top-level await). Статус и тело
+    // ответа сниппет печатает — вывод перехватываем, чтобы сравнить echo с отправкой sendRequest.
+    const runFetchSnippet = async (code) => {
+      const printed = []
+      const originalLog = console.log
+      console.log = (...args) => printed.push(args)
+      try {
+        await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
+      } finally {
+        console.log = originalLog
+      }
+      assert.equal(printed.length, 1, 'сниппет один раз выводит статус и тело ответа')
+      const [status, text] = printed[0]
+      return { status, echo: JSON.parse(text) }
+    }
+    const appEcho = async (snapshot, id) => JSON.parse((await http.sendRequest(snapshot, id)).body)
+    // Тело здесь не сравнивается: у urlencoded и multipart на проводе оно кодируется клиентом
+    // (пробел → +, свой boundary) — пары и поля сверяются отдельно. Заголовки из skipHeaders
+    // исключаются: их тоже добавляет клиент (content-type multipart, content-length).
+    const requestLine = (echo, ...skipHeaders) => {
+      const headers = { ...echo.headers }
+      for (const name of skipHeaders) delete headers[name]
+      return { method: echo.method, url: echo.url, headers }
+    }
+
+    await check('fetch-сниппет отправляет тот же запрос, что sendRequest (json, text, basic, urlencoded, form-data)', async () => {
+      const solid = [
+        ['json', { method: 'POST', url: `${base}/users`, params: [{ id: 'p1', key: 'page', value: '2', enabled: true }], headers: [{ id: 'h1', key: 'X-Trace', value: 'abc', enabled: true }], body: { type: 'json', json: '{"name":"Ann"}' }, auth: { type: 'bearer', token: 't-1' } }],
+        ['text', { method: 'PUT', url: `${base}/notes`, params: [], headers: [], body: { type: 'text', text: 'hello world' }, auth: { type: 'none' } }],
+        ['basic', { method: 'POST', url: `${base}/login`, params: [], headers: [], body: { type: 'json', json: '{}' }, auth: { type: 'basic', username: 'логин', password: 'пароль' } }]
+      ]
+      for (const [name, snapshot] of solid) {
+        const { status, echo } = await runFetchSnippet(snippet(snapshot, 'fetch'))
+        assert.equal(status, 201, `${name}: сниппет вывел статус ответа`)
+        assert.deepEqual(echo, await appEcho(snapshot, `smoke-snippet-${name}`), `${name}: метод, URL, заголовки и тело совпадают с отправкой приложения`)
+      }
+
+      // urlencoded: кодировка на проводе своя (пробел → +), декодированные пары те же.
+      const urlencoded = { method: 'POST', url: `${base}/token`, params: [], headers: [], auth: { type: 'none' }, body: { type: 'urlencoded', urlencoded: [
+        { id: 'u1', key: 'grant_type', value: 'client_credentials', enabled: true },
+        { id: 'u2', key: 'client_id', value: 'ab c&d', enabled: true }
+      ] } }
+      const { echo: urlEcho } = await runFetchSnippet(snippet(urlencoded, 'fetch'))
+      const urlApp = await appEcho(urlencoded, 'smoke-snippet-urlencoded')
+      assert.deepEqual([...new URLSearchParams(urlEcho.body)], [...new URLSearchParams(urlApp.body)])
+      assert.deepEqual(requestLine(urlEcho, 'content-length'), requestLine(urlApp, 'content-length'))
+
+      // multipart: boundary у клиента свой — сравниваем декодированные поля.
+      const parseMultipart = ({ headers, body }) => {
+        const boundary = /boundary=([^;]+)/.exec(headers['content-type'])[1]
+        return body
+          .split(`--${boundary}`)
+          .slice(1, -1)
+          .map((part) => {
+            const [head, ...rest] = part.trim().split('\r\n\r\n')
+            return [/name="([^"]*)"/.exec(head)[1], rest.join('\r\n\r\n')]
+          })
+      }
+      const formData = { method: 'POST', url: `${base}/upload`, params: [], headers: [], auth: { type: 'none' }, body: { type: 'form-data', form: [
+        { id: 'f1', key: 'field1', value: 'value1', enabled: true },
+        { id: 'f2', key: 'field2', value: 'привет мир', enabled: true },
+        { id: 'f3', key: 'skip', value: 'x', enabled: false }
+      ] } }
+      const { echo: formEcho } = await runFetchSnippet(snippet(formData, 'fetch'))
+      const formApp = await appEcho(formData, 'smoke-snippet-form-data')
+      assert.ok(formEcho.headers['content-type'].startsWith('multipart/form-data; boundary='), 'Content-Type с boundary поставил клиент')
+      assert.deepEqual(parseMultipart(formEcho), [['field1', 'value1'], ['field2', 'привет мир']])
+      assert.deepEqual(parseMultipart(formEcho), parseMultipart(formApp))
+      assert.deepEqual(requestLine(formEcho, 'content-type', 'content-length'), requestLine(formApp, 'content-type', 'content-length'))
+    })
+
+    await check('axios-сниппет синтаксически корректен (import + async-стрелка парсятся)', () => {
+      const cases = [
+        canonical,
+        { method: 'POST', url: 'https://x.test', params: [], headers: [], body: { type: 'urlencoded', urlencoded: [{ id: 'u1', key: 'a', value: 'b c', enabled: true }] }, auth: { type: 'none' } },
+        { method: 'POST', url: 'https://x.test', params: [], headers: [], body: { type: 'form-data', form: [{ id: 'f1', key: 'a', value: 'b', enabled: true }] }, auth: { type: 'none' } },
+        { method: 'GET', url: 'https://x.test', params: [], headers: [], body: { type: 'none' }, auth: { type: 'basic', username: 'u', password: 'p' } },
+        { ...canonical, headers: [{ id: 'h1', key: 'X-Note', value: 'it\'s "quoted" \\ ${x}\n', enabled: true }] }
+      ]
+      for (const snapshot of cases) {
+        const code = snippet(snapshot, 'axios')
+        assert.ok(code.startsWith("import axios from 'axios';\n"), 'сниппет начинается с подключения клиента')
+        assert.doesNotThrow(() => new Function(`return (async () => {\n${code.replace(/^import .*$/m, '')}\n})`))
+      }
     })
   } finally {
     await closeServer()

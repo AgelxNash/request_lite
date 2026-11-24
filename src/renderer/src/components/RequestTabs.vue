@@ -1,9 +1,10 @@
 <script setup>
-import { computed, inject, onBeforeUnmount, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, shallowRef } from 'vue'
 import { useProjectsStore } from '../stores/projects.js'
 import { useRequestsStore } from '../stores/requests.js'
 import { useTabsStore } from '../stores/tabs.js'
 import { generateCurl } from '../lib/curl.js'
+import { SNIPPET_LANGS, generateSnippet } from '../lib/snippets.js'
 import { toSnapshot } from '../stores/tabs.js'
 import ContextMenu from './ContextMenu.vue'
 import CurlExportPanel from './CurlExportPanel.vue'
@@ -15,9 +16,24 @@ const dialog = inject('dialog')
 
 const contextMenu = ref(null)
 const menuTabId = ref(null)
-const curlPanelVisible = ref(false)
-const curlPanelText = ref('')
 const stripEl = ref(null)
+
+// --- Панель кода ---
+// Языки селектора: cURL (generateCurl) и сниппеты (generateSnippet).
+const codeLangs = [{ value: 'curl', label: 'cURL' }, ...SNIPPET_LANGS]
+const codePanelVisible = ref(false)
+// Снимок кликнутой вкладки фиксируется в момент открытия пункта меню: переключение языка
+// перегенерирует код для того же снимка, правки вкладки показанный код не меняют.
+const codePanelSnapshot = shallowRef(null)
+// Выбранный язык помнится, пока приложение запущено (без persist).
+const codePanelLang = ref('curl')
+const codePanelText = computed(() => {
+  const snapshot = codePanelSnapshot.value
+  if (!snapshot) return ''
+  return codePanelLang.value === 'curl'
+    ? generateCurl(snapshot)
+    : generateSnippet(snapshot, codePanelLang.value)
+})
 
 // --- Перетаскивание вкладок: свои pointer-события, без зависимостей ---
 // Порог отличает клик от drag; у краёв полосы включается автоскролл.
@@ -73,10 +89,10 @@ const menuItems = computed(() => {
       action: () => tabs.togglePin(tab.id)
     },
     {
-      label: 'Копировать как cURL',
+      label: 'Сгенерировать код',
       action: () => {
-        curlPanelText.value = generateCurl(toSnapshot(tab))
-        curlPanelVisible.value = true
+        codePanelSnapshot.value = toSnapshot(tab)
+        codePanelVisible.value = true
       }
     },
     {
@@ -262,6 +278,13 @@ onBeforeUnmount(endDrag)
       </button>
     </div>
     <ContextMenu ref="contextMenu" :items="menuItems" @close="closeTabMenu" />
-    <CurlExportPanel :visible="curlPanelVisible" :text="curlPanelText" @close="curlPanelVisible = false" />
+    <CurlExportPanel
+      :visible="codePanelVisible"
+      :text="codePanelText"
+      :lang="codePanelLang"
+      :langs="codeLangs"
+      @update:lang="codePanelLang = $event"
+      @close="codePanelVisible = false"
+    />
   </div>
 </template>
