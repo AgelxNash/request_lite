@@ -34,12 +34,15 @@ let edgeDir = 0
 let suppressClick = false
 
 // Клик открывает запрос, но не сразу после drag (см. suppressClick).
+// Открывшей вкладке запоминается проект запроса; история ответов подгружается с диска,
+// последний ответ показывается с пометкой «из истории» — без отправки запроса.
 function open(request) {
   if (suppressClick) {
     suppressClick = false
     return
   }
-  tabs.openSaved(request)
+  const tab = tabs.openSaved(request, projects.activeProjectId)
+  tabs.loadHistory(tab.id)
 }
 
 function onRowPointerDown(request, event) {

@@ -62,6 +62,11 @@ export function registerIpc(getMainWindow = () => null) {
     storage.reorderRequests(projectId, requestId, toIndex)
   )
 
+  // История ответов сохранённого запроса (read-only для renderer: пишет main после отправки).
+  ipcMain.handle('history:list', (_event, { projectId, requestId }) =>
+    storage.listResponseHistory(projectId, requestId)
+  )
+
   ipcMain.handle('environments:list', (_event, projectId) => storage.listEnvironments(projectId))
   ipcMain.handle('environments:save', (_event, { projectId, environment }) =>
     storage.saveEnvironment(projectId, environment)
@@ -115,9 +120,19 @@ export function registerIpc(getMainWindow = () => null) {
   })
 
   // HTTP: выполнение строго в main; renderer присылает снимок вкладки + requestId.
-  ipcMain.handle('http:request', async (_event, { requestId, request }) => {
+  // history — цель истории ответов {projectId, requestId} сохранённого запроса
+  // (или null у несохранённой вкладки): после успешной отправки main сам пишет историю.
+  ipcMain.handle('http:request', async (_event, { requestId, request, history }) => {
     try {
       const response = await sendRequest(request, requestId)
+      if (history) {
+        // Сбой записи истории ответ не теряет: он уже получен и уходит в renderer.
+        try {
+          await storage.appendResponseHistory(history.projectId, history.requestId, response)
+        } catch {
+          // история не критична для показа ответа
+        }
+      }
       return { ok: true, response }
     } catch (err) {
       return { ok: false, error: { code: err.code ?? 'NETWORK', message: err.message } }

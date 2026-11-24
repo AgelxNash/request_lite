@@ -248,7 +248,14 @@ const TOOLS = [
       const stored = (await storage.listRequests(projectId)).find((r) => r.id === String(requestId))
       if (!stored) throw new Error(`Запрос не найден: ${requestId}`)
       const snapshot = await resolveSnapshot(projectId, stored)
-      return capBody(await sendRequest(snapshot, `mcp-${randomUUID()}`))
+      const response = await sendRequest(snapshot, `mcp-${randomUUID()}`)
+      // История ответов — как у отправки из UI; сбой записи не рвёт успешный ответ агенту.
+      try {
+        await storage.appendResponseHistory(projectId, String(requestId), response)
+      } catch {
+        // история не критична для результата инструмента
+      }
+      return capBody(response)
     }
   },
   {
