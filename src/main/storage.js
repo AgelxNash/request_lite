@@ -30,21 +30,63 @@ async function ensureDirs() {
   await mkdir(join(getStorageRoot(), 'mock-projects'), { recursive: true })
 }
 
-// Атомарная запись: сначала во временный файл, затем rename поверх целевого.
-// Ретрай на EPERM: на Windows rename может упасть, если файл на мгновение держит
-// антивирус или индексатор — повторяем попытку до 3 раз с паузой.
-async function writeJsonAtomic(filePath, data) {
-  const tmp = `${filePath}.tmp`
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await rename(tmp, filePath)
-      return
-    } catch (err) {
-      if (err.code !== 'EPERM' || attempt >= 3) throw err
-      await new Promise((resolve) => setTimeout(resolve, 50))
+// Мутации одного пути сериализуются очередью (по образцу enqueueMutation из mcp.js):
+// две записи, начатые одновременно, не смешиваются и не теряют обновлений друг друга.
+// Ключ — абсолютный путь; очередь удаляется, когда drained, чтобы map не рос бесконечно.
+const writeQueues = new Map()
+
+function enqueueWrite(filePath, fn) {
+  const tail = writeQueues.get(filePath) ?? Promise.resolve()
+  const run = tail.then(fn)
+  const next = run.then(
+    () => {
+      if (writeQueues.get(filePath) === next) writeQueues.delete(filePath)
+    },
+    () => {
+      if (writeQueues.get(filePath) === next) writeQueues.delete(filePath)
     }
+  )
+  writeQueues.set(filePath, next)
+  return run
+}
+
+// Сырая запись: уникальный tmp на вызов — параллельные вызовы не пишут в один
+// временный файл. Ретрай на EPERM: на Windows rename может упасть, если файл
+// на мгновение держит антивирус или индексатор — до 3 раз с паузой.
+async function writeJsonFile(filePath, data) {
+  const tmp = `${filePath}.${randomUUID()}.tmp`
+  try {
+    await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await rename(tmp, filePath)
+        return
+      } catch (err) {
+        if (err.code !== 'EPERM' || attempt >= 3) throw err
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    }
+  } catch (err) {
+    await rm(tmp, { force: true }) // осиротевший tmp не копим: rename мог не дойти
+    throw err
   }
+}
+
+// Полная замена файла без чтения-изменения-записи (свежий файл, конфиг).
+async function writeJsonAtomic(filePath, data) {
+  return enqueueWrite(filePath, () => writeJsonFile(filePath, data))
+}
+
+// Чтение-изменение-запись одним очередённым шагом: параллельные мутации одного
+// файла читают результат предыдущей, а не общее устаревшее состояние. Внутри
+// mutator файл писать нельзя — запись выполняет сам mutateJsonFile (иначе deadlock).
+async function mutateJsonFile(filePath, fallback, mutator) {
+  return enqueueWrite(filePath, async () => {
+    const current = await readJson(filePath, fallback)
+    const { next, result } = await mutator(current)
+    await writeJsonFile(filePath, next)
+    return result
+  })
 }
 
 // Чтение JSON с защитой данных: невалидный файл НЕ перезаписывается —
@@ -70,6 +112,8 @@ async function readJson(filePath, fallback) {
 
 const indexPath = () => join(getStorageRoot(), 'projects.json')
 const projectPath = (id) => join(getStorageRoot(), 'projects', `${id}.json`)
+const historyDir = (projectId) => join(getStorageRoot(), 'history', projectId)
+const historyPath = (projectId, requestId) => join(historyDir(projectId), `${requestId}.json`)
 const mockIndexPath = () => join(getStorageRoot(), 'mock-projects.json')
 const mockProjectPath = (id) => join(getStorageRoot(), 'mock-projects', `${id}.json`)
 const settingsPath = () => join(getStorageRoot(), 'settings.json')
@@ -87,9 +131,7 @@ export async function createProject(name) {
   await ensureDirs()
   const now = new Date().toISOString()
   const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now, locked: false, pinned: false }
-  const projects = await listProjects()
-  projects.push(project)
-  await writeJsonAtomic(indexPath(), projects)
+  await mutateJsonFile(indexPath(), [], (projects) => ({ next: [...projects, project], result: project }))
   await writeJsonAtomic(projectPath(project.id), {
     requests: [],
     environments: [],
@@ -101,37 +143,38 @@ export async function createProject(name) {
 export async function renameProject(id, name) {
   const trimmed = String(name ?? '').trim()
   if (!trimmed) throw new Error('Имя проекта не может быть пустым')
-  const projects = await listProjects()
-  const project = projects.find((p) => p.id === id)
-  if (!project) throw new Error(`Проект не найден: ${id}`)
-  project.name = trimmed
-  project.updatedAt = new Date().toISOString()
-  await writeJsonAtomic(indexPath(), projects)
-  return project
+  return mutateJsonFile(indexPath(), [], (projects) => {
+    const project = projects.find((p) => p.id === id)
+    if (!project) throw new Error(`Проект не найден: ${id}`)
+    project.name = trimmed
+    project.updatedAt = new Date().toISOString()
+    return { next: projects, result: project }
+  })
 }
 
 export async function deleteProject(id) {
-  const projects = await listProjects()
-  const project = projects.find((p) => p.id === id)
-  if (!project) throw new Error(`Проект не найден: ${id}`)
-  // Guard до мутаций: заблокированный проект не удаляется даже минуя UI.
-  if (project.locked === true) throw new Error('Проект заблокирован')
-  const next = projects.filter((p) => p.id !== id)
-  await writeJsonAtomic(indexPath(), next)
+  // Guard заблокированного проекта — внутри очередённой мутации, до записи индекса.
+  await mutateJsonFile(indexPath(), [], (projects) => {
+    const project = projects.find((p) => p.id === id)
+    if (!project) throw new Error(`Проект не найден: ${id}`)
+    if (project.locked === true) throw new Error('Проект заблокирован')
+    return { next: projects.filter((p) => p.id !== id), result: true }
+  })
   await rm(projectPath(id), { force: true })
+  await rm(historyDir(id), { recursive: true, force: true })
   return true
 }
 
 // Блокировка проекта (защита от удаления). Флаг живёт в индексе.
 export async function setProjectLocked(id, locked) {
   if (typeof locked !== 'boolean') throw new Error('locked должен быть boolean')
-  const projects = await listProjects()
-  const project = projects.find((p) => p.id === id)
-  if (!project) throw new Error(`Проект не найден: ${id}`)
-  project.locked = locked
-  project.updatedAt = new Date().toISOString()
-  await writeJsonAtomic(indexPath(), projects)
-  return project
+  return mutateJsonFile(indexPath(), [], (projects) => {
+    const project = projects.find((p) => p.id === id)
+    if (!project) throw new Error(`Проект не найден: ${id}`)
+    project.locked = locked
+    project.updatedAt = new Date().toISOString()
+    return { next: projects, result: project }
+  })
 }
 
 // Перемещение проекта на новую позицию в индексе. Перемещение меняет только
@@ -146,18 +189,18 @@ export async function reorderProjects(id, toIndex) {
   if (!Number.isInteger(toIndex) || toIndex < 0) {
     throw new Error('toIndex должен быть целым числом >= 0')
   }
-  const projects = await listProjects()
-  const from = projects.findIndex((p) => p.id === id)
-  if (from === -1) throw new Error(`Проект не найден: ${id}`)
-  const pinnedCount = projects.filter((p) => p.pinned === true).length
-  const lower = projects[from].pinned === true ? 0 : pinnedCount
-  const upper = projects[from].pinned === true ? pinnedCount - 1 : projects.length - 1
-  const to = Math.max(lower, Math.min(toIndex, upper))
-  if (to === from) return projects
-  const [moved] = projects.splice(from, 1)
-  projects.splice(to, 0, moved)
-  await writeJsonAtomic(indexPath(), projects)
-  return projects
+  return mutateJsonFile(indexPath(), [], (projects) => {
+    const from = projects.findIndex((p) => p.id === id)
+    if (from === -1) throw new Error(`Проект не найден: ${id}`)
+    const pinnedCount = projects.filter((p) => p.pinned === true).length
+    const lower = projects[from].pinned === true ? 0 : pinnedCount
+    const upper = projects[from].pinned === true ? pinnedCount - 1 : projects.length - 1
+    const to = Math.max(lower, Math.min(toIndex, upper))
+    if (to === from) return { next: projects, result: projects }
+    const [moved] = projects.splice(from, 1)
+    projects.splice(to, 0, moved)
+    return { next: projects, result: projects }
+  })
 }
 
 // Закрепление проекта (верхняя зона списка). Флаг — метаданные записи индекса.
@@ -171,17 +214,17 @@ function normalizeProjectZone(projects) {
 
 export async function setProjectPinned(id, pinned) {
   if (typeof pinned !== 'boolean') throw new Error('pinned должен быть boolean')
-  const projects = await listProjects()
-  const project = projects.find((p) => p.id === id)
-  if (!project) throw new Error(`Проект не найден: ${id}`)
-  project.pinned = pinned
-  const next = normalizeProjectZone(projects)
-  await writeJsonAtomic(indexPath(), next)
-  return next
+  return mutateJsonFile(indexPath(), [], (projects) => {
+    const project = projects.find((p) => p.id === id)
+    if (!project) throw new Error(`Проект не найден: ${id}`)
+    project.pinned = pinned
+    const next = normalizeProjectZone(projects)
+    return { next, result: next }
+  })
 }
 
 // Bulk-импорт коллекции Postman: проект в индексе + файл проекта
-// (requests[] + окружение с именем коллекции + activeEnvId) одной атомарной записью.
+// (requests[] + окружение с именем коллекции + activeEnvId) атомарными записями.
 export async function importCollection({ name, requests, variables }) {
   const trimmed = String(name ?? '').trim()
   if (!trimmed) throw new Error('Имя проекта не может быть пустым')
@@ -211,9 +254,7 @@ export async function importCollection({ name, requests, variables }) {
     locked: false,
     pinned: false
   }))
-  const projects = await listProjects()
-  projects.push(project)
-  await writeJsonAtomic(indexPath(), projects)
+  await mutateJsonFile(indexPath(), [], (projects) => ({ next: [...projects, project], result: project }))
   await writeJsonAtomic(projectPath(project.id), {
     requests: records,
     environments: [environment],
@@ -246,7 +287,6 @@ export async function saveRequest(projectId, request) {
   const name = String(request?.name ?? '').trim()
   if (!name) throw new Error('Имя запроса не может быть пустым')
   if (!request.id) throw new Error('У сохраняемого запроса должен быть id')
-  const project = await requireProject(projectId)
   const stored = {
     id: String(request.id),
     name,
@@ -258,47 +298,53 @@ export async function saveRequest(projectId, request) {
     auth: request.auth ?? { type: 'none' },
     sslVerify: request.sslVerify !== false
   }
-  const requests = project.requests ?? []
-  const index = requests.findIndex((r) => r.id === stored.id)
-  if (index === -1) {
-    requests.push({ ...stored, locked: false, pinned: false })
-  } else {
-    // Guard до мутаций: заблокированный запрос нельзя обновить даже минуя UI.
-    if (requests[index].locked === true) throw new Error('Запрос заблокирован')
-    // Флаги блокировки и закрепления — метаданные записи: не сбрасываются
-    // при сохранении содержимого.
-    requests[index] = {
-      ...stored,
-      locked: requests[index].locked === true,
-      pinned: requests[index].pinned === true
+  return mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const requests = project.requests ?? []
+    const index = requests.findIndex((r) => r.id === stored.id)
+    if (index === -1) {
+      requests.push({ ...stored, locked: false, pinned: false })
+    } else {
+      // Guard до мутаций: заблокированный запрос нельзя обновить даже минуя UI.
+      if (requests[index].locked === true) throw new Error('Запрос заблокирован')
+      // Флаги блокировки и закрепления — метаданные записи: не сбрасываются
+      // при сохранении содержимого.
+      requests[index] = {
+        ...stored,
+        locked: requests[index].locked === true,
+        pinned: requests[index].pinned === true
+      }
     }
-  }
-  await writeJsonAtomic(projectPath(projectId), { ...project, requests })
-  return requests
+    return { next: { ...project, requests }, result: requests }
+  })
 }
 
 // Удаление заблокированного запроса отклоняется (см. setRequestLocked).
 export async function deleteRequest(projectId, requestId) {
-  const project = await requireProject(projectId)
-  const requests = project.requests ?? []
-  const existing = requests.find((r) => r.id === requestId)
-  if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
-  if (existing.locked === true) throw new Error('Запрос заблокирован')
-  const next = requests.filter((r) => r.id !== requestId)
-  await writeJsonAtomic(projectPath(projectId), { ...project, requests: next })
+  const next = await mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const requests = project.requests ?? []
+    const existing = requests.find((r) => r.id === requestId)
+    if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
+    if (existing.locked === true) throw new Error('Запрос заблокирован')
+    const remaining = requests.filter((r) => r.id !== requestId)
+    return { next: { ...project, requests: remaining }, result: remaining }
+  })
+  await rm(historyPath(projectId, requestId), { force: true })
   return next
 }
 
 // Блокировка запроса (защита от обновления и удаления). Флаг — метаданные записи.
 export async function setRequestLocked(projectId, requestId, locked) {
   if (typeof locked !== 'boolean') throw new Error('locked должен быть boolean')
-  const project = await requireProject(projectId)
-  const requests = project.requests ?? []
-  const existing = requests.find((r) => r.id === requestId)
-  if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
-  existing.locked = locked
-  await writeJsonAtomic(projectPath(projectId), { ...project, requests })
-  return requests
+  return mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const requests = project.requests ?? []
+    const existing = requests.find((r) => r.id === requestId)
+    if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
+    existing.locked = locked
+    return { next: { ...project, requests }, result: requests }
+  })
 }
 
 // Перемещение запроса на новую позицию в списке проекта. Перемещение меняет только
@@ -313,19 +359,20 @@ export async function reorderRequests(projectId, requestId, toIndex) {
   if (!Number.isInteger(toIndex) || toIndex < 0) {
     throw new Error('toIndex должен быть целым числом >= 0')
   }
-  const project = await requireProject(projectId)
-  const requests = project.requests ?? []
-  const from = requests.findIndex((r) => r.id === requestId)
-  if (from === -1) throw new Error(`Запрос не найден: ${requestId}`)
-  const pinnedCount = requests.filter((r) => r.pinned === true).length
-  const lower = requests[from].pinned === true ? 0 : pinnedCount
-  const upper = requests[from].pinned === true ? pinnedCount - 1 : requests.length - 1
-  const to = Math.max(lower, Math.min(toIndex, upper))
-  if (to === from) return requests
-  const [moved] = requests.splice(from, 1)
-  requests.splice(to, 0, moved)
-  await writeJsonAtomic(projectPath(projectId), { ...project, requests })
-  return requests
+  return mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const requests = project.requests ?? []
+    const from = requests.findIndex((r) => r.id === requestId)
+    if (from === -1) throw new Error(`Запрос не найден: ${requestId}`)
+    const pinnedCount = requests.filter((r) => r.pinned === true).length
+    const lower = requests[from].pinned === true ? 0 : pinnedCount
+    const upper = requests[from].pinned === true ? pinnedCount - 1 : requests.length - 1
+    const to = Math.max(lower, Math.min(toIndex, upper))
+    if (to === from) return { next: project, result: requests }
+    const [moved] = requests.splice(from, 1)
+    requests.splice(to, 0, moved)
+    return { next: { ...project, requests }, result: requests }
+  })
 }
 
 // Закрепление запроса (верхняя зона списка). Флаг — метаданные записи.
@@ -339,14 +386,65 @@ function normalizeRequestZone(requests) {
 
 export async function setRequestPinned(projectId, requestId, pinned) {
   if (typeof pinned !== 'boolean') throw new Error('pinned должен быть boolean')
-  const project = await requireProject(projectId)
-  const requests = project.requests ?? []
-  const existing = requests.find((r) => r.id === requestId)
-  if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
-  existing.pinned = pinned
-  const next = normalizeRequestZone(requests)
-  await writeJsonAtomic(projectPath(projectId), { ...project, requests: next })
-  return next
+  return mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const requests = project.requests ?? []
+    const existing = requests.find((r) => r.id === requestId)
+    if (!existing) throw new Error(`Запрос не найден: ${requestId}`)
+    existing.pinned = pinned
+    const next = { ...project, requests: normalizeRequestZone(requests) }
+    return { next, result: next.requests }
+  })
+}
+
+// --- История ответов запроса ---
+
+// Последние HTTP-ответы каждого запроса: отдельный файл на пару (projectId,
+// requestId) — history/<projectId>/<requestId>.json. Не в файле проекта: каждая
+// отправка не должна переписывать весь проект. Лимиты — константы кода.
+const HISTORY_LIMIT = 10
+const HISTORY_BODY_LIMIT = 100 * 1024
+
+// Текстовые content-type: тело сохраняется; остальное — бинарное, храним только метаданные.
+// Отсутствие content-type считаем текстом — ровно так ответ показывает ResponseView.
+const TEXT_CONTENT_RE = /(^text\/)|json|xml|javascript|x-www-form-urlencoded/i
+
+function isTextContent(headers) {
+  const contentType = (headers ?? []).find((h) => String(h?.key ?? '').toLowerCase() === 'content-type')
+  const value = String(contentType?.value ?? '')
+  return value === '' || TEXT_CONTENT_RE.test(value)
+}
+
+// Дописывает ответ в историю запроса. Вызывается после успешной отправки (IPC и MCP);
+// повреждённый файл истории не перезаписывается — запись тихо пропускается, ответ
+// вызывающая сторона уже показала пользователю. Вставка в начало, лимит глубины — срез.
+export async function appendResponseHistory(projectId, requestId, response) {
+  await requireProject(projectId)
+  await mkdir(historyDir(projectId), { recursive: true }) // каталог проекта появляется с первой записью
+  const entry = { createdAt: new Date().toISOString(), response: { ...response } }
+  if (typeof entry.response.body === 'string' && entry.response.body.length > HISTORY_BODY_LIMIT) {
+    entry.response.body = entry.response.body.slice(0, HISTORY_BODY_LIMIT)
+    entry.response.bodyCut = true
+  }
+  if (!isTextContent(entry.response.headers)) {
+    entry.response.binary = true
+    entry.response.body = null
+  }
+  return mutateJsonFile(historyPath(projectId, requestId), { entries: [] }, (current) => {
+    const entries = [entry, ...(current.entries ?? [])].slice(0, HISTORY_LIMIT)
+    return { next: { entries }, result: entry }
+  }).catch((err) => {
+    if (err.code === 'CORRUPT_STORAGE') return null
+    throw err
+  })
+}
+
+// История запроса: записи от новых к старым; пустая история — [].
+// Повреждённый файл пробрасывает CORRUPT_STORAGE наверх (UI показывает «История недоступна»).
+export async function listResponseHistory(projectId, requestId) {
+  await requireProject(projectId)
+  const data = await readJson(historyPath(projectId, requestId), { entries: [] })
+  return data.entries ?? []
 }
 
 // --- Окружения проекта ---
@@ -361,40 +459,48 @@ export async function saveEnvironment(projectId, environment) {
   const name = String(environment?.name ?? '').trim()
   if (!name) throw new Error('Имя окружения не может быть пустым')
   if (!environment.id) throw new Error('У сохраняемого окружения должен быть id')
-  const project = await requireProject(projectId)
   const stored = {
     id: String(environment.id),
     name,
     variables: environment.variables ?? []
   }
-  const environments = project.environments ?? []
-  const index = environments.findIndex((e) => e.id === stored.id)
-  if (index === -1) environments.push(stored)
-  else environments[index] = stored
-  await writeJsonAtomic(projectPath(projectId), { ...project, environments })
-  return environments
+  return mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const environments = project.environments ?? []
+    const index = environments.findIndex((e) => e.id === stored.id)
+    if (index === -1) environments.push(stored)
+    else environments[index] = stored
+    return { next: { ...project, environments }, result: environments }
+  })
 }
 
 // Удаление окружения; если удалили активное — activeEnvId обнуляется.
 export async function deleteEnvironment(projectId, environmentId) {
-  const project = await requireProject(projectId)
-  const environments = project.environments ?? []
-  const next = environments.filter((e) => e.id !== environmentId)
-  if (next.length === environments.length) throw new Error(`Окружение не найдено: ${environmentId}`)
-  const activeEnvId = project.activeEnvId === environmentId ? null : project.activeEnvId ?? null
-  await writeJsonAtomic(projectPath(projectId), { ...project, environments: next, activeEnvId })
-  return { environments: next, activeEnvId }
+  return mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const environments = project.environments ?? []
+    const next = environments.filter((e) => e.id !== environmentId)
+    if (next.length === environments.length) throw new Error(`Окружение не найдено: ${environmentId}`)
+    const activeEnvId = project.activeEnvId === environmentId ? null : project.activeEnvId ?? null
+    return {
+      next: { ...project, environments: next, activeEnvId },
+      result: { environments: next, activeEnvId }
+    }
+  })
 }
 
 export async function setActiveEnvironment(projectId, environmentId) {
-  const project = await requireProject(projectId)
-  const environments = project.environments ?? []
-  if (environmentId !== null && !environments.some((e) => e.id === environmentId)) {
-    throw new Error(`Окружение не найдено: ${environmentId}`)
-  }
-  const activeEnvId = environmentId
-  await writeJsonAtomic(projectPath(projectId), { ...project, activeEnvId })
-  return { environments, activeEnvId }
+  return mutateJsonFile(projectPath(projectId), null, (project) => {
+    if (!project) throw new Error(`Проект не найден: ${projectId}`)
+    const environments = project.environments ?? []
+    if (environmentId !== null && !environments.some((e) => e.id === environmentId)) {
+      throw new Error(`Окружение не найдено: ${environmentId}`)
+    }
+    return {
+      next: { ...project, activeEnvId: environmentId },
+      result: { environments, activeEnvId: environmentId }
+    }
+  })
 }
 
 // --- Мок-проекты ---
@@ -458,9 +564,7 @@ export async function createMockProject(name) {
   await ensureDirs()
   const now = new Date().toISOString()
   const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now }
-  const projects = await listMockProjects()
-  projects.push(project)
-  await writeJsonAtomic(mockIndexPath(), projects)
+  await mutateJsonFile(mockIndexPath(), [], (projects) => ({ next: [...projects, project], result: project }))
   await writeJsonAtomic(mockProjectPath(project.id), { routes: [], defaultResponse: null })
   return project
 }
@@ -468,21 +572,21 @@ export async function createMockProject(name) {
 export async function renameMockProject(id, name) {
   const trimmed = String(name ?? '').trim()
   if (!trimmed) throw new Error('Имя мок-проекта не может быть пустым')
-  const projects = await listMockProjects()
-  const project = projects.find((p) => p.id === id)
-  if (!project) throw new Error(`Мок-проект не найден: ${id}`)
-  project.name = trimmed
-  project.updatedAt = new Date().toISOString()
-  await writeJsonAtomic(mockIndexPath(), projects)
-  return project
+  return mutateJsonFile(mockIndexPath(), [], (projects) => {
+    const project = projects.find((p) => p.id === id)
+    if (!project) throw new Error(`Мок-проект не найден: ${id}`)
+    project.name = trimmed
+    project.updatedAt = new Date().toISOString()
+    return { next: projects, result: project }
+  })
 }
 
 export async function deleteMockProject(id) {
-  const projects = await listMockProjects()
-  const project = projects.find((p) => p.id === id)
-  if (!project) throw new Error(`Мок-проект не найден: ${id}`)
-  const next = projects.filter((p) => p.id !== id)
-  await writeJsonAtomic(mockIndexPath(), next)
+  await mutateJsonFile(mockIndexPath(), [], (projects) => {
+    const project = projects.find((p) => p.id === id)
+    if (!project) throw new Error(`Мок-проект не найден: ${id}`)
+    return { next: projects.filter((p) => p.id !== id), result: true }
+  })
   await rm(mockProjectPath(id), { force: true })
   return true
 }

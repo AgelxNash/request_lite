@@ -1900,6 +1900,38 @@ try {
         assert.equal(fail.error.code, 'NETWORK')
       })
 
+      await check('send_request пишет историю запроса; ошибка и send_adhoc историю не меняют', async () => {
+        const project = (await storage.listProjects())[0]
+        let out = await mcpTool('create_request', {
+          projectId: project.id,
+          request: { name: 'EchoHist', method: 'GET', url: '{{baseUrl}}/hist' }
+        })
+        const requestId = out.data.find((r) => r.name === 'EchoHist').id
+        // Пять параллельных отправок одного запроса: очередь хранилища не ломает файл истории.
+        const sent = await Promise.all(
+          Array.from({ length: 5 }, () => mcpTool('send_request', { projectId: project.id, requestId }))
+        )
+        assert.ok(sent.every((r) => r.ok === true))
+        const entries = await storage.listResponseHistory(project.id, requestId)
+        assert.equal(entries.length, 5, 'все отправки в истории, файл валиден')
+        assert.equal(entries[0].response.status, 200)
+
+        // Ошибка отправки сохранённого запроса историю не пополняет.
+        out = await mcpTool('create_request', {
+          projectId: project.id,
+          request: { name: 'EchoFail', method: 'GET', url: 'http://127.0.0.1:1/nope' }
+        })
+        const failId = out.data.find((r) => r.name === 'EchoFail').id
+        const failed = await mcpTool('send_request', { projectId: project.id, requestId: failId })
+        assert.equal(failed.ok, false)
+        assert.deepEqual(await storage.listResponseHistory(project.id, failId), [])
+
+        // Произвольный запрос агента историю не пишет вовсе: файлов в каталоге проекта — два.
+        await mcpTool('send_adhoc', { method: 'GET', url: `${echoBase}/hist` })
+        const projectFiles = await readdir(join(mcpRoot, 'history', project.id))
+        assert.equal(projectFiles.length, 2, 'только EchoHist и EchoFail; send_adhoc файл не создал')
+      })
+
       await check('curl-инструменты: экспорт и импорт без записи на диск', async () => {
         const project = (await storage.listProjects())[0]
         let out = await mcpTool('create_request', {
@@ -2210,6 +2242,171 @@ try {
   } finally {
     await mock.stopMockServer()
     await rm(mockRoot, { recursive: true, force: true })
+  }
+
+  // --- История ответов (секция в src/main/storage.js) ---
+  // Отдельный корень хранилища: не зависит от состояния основного (там после
+  // CORRUPT-теста projects.json оставлен битым намеренно).
+
+  const histRoot = await mkdtemp(join(tmpdir(), 'postman-lite-smoke-hist-'))
+  storage.initStorage(histRoot)
+
+  try {
+    const histProject = await storage.createProject('Hist')
+    const P = histProject.id
+    const REQ = 'req-1'
+    await storage.saveRequest(P, { id: REQ, name: 'Req', method: 'GET', url: 'http://127.0.0.1/x', headers: [], params: [] })
+    const makeResponse = (body, status = 200) => ({
+      status,
+      statusText: 'OK',
+      timeMs: 12,
+      size: Buffer.byteLength(String(body)),
+      headers: [{ key: 'Content-Type', value: 'application/json' }],
+      body: String(body),
+      truncated: false
+    })
+
+    await check('append→list: новая запись первая, поля ответа сохранены', async () => {
+      await storage.appendResponseHistory(P, REQ, makeResponse('{"a":1}'))
+      await storage.appendResponseHistory(P, REQ, makeResponse('{"a":2}'))
+      const entries = await storage.listResponseHistory(P, REQ)
+      assert.equal(entries.length, 2)
+      assert.equal(entries[0].response.body, '{"a":2}', 'новая запись первая')
+      assert.equal(entries[1].response.body, '{"a":1}')
+      assert.ok(entries[0].createdAt, 'время получения в записи')
+      assert.equal(entries[0].response.status, 200)
+      assert.equal(entries[0].response.timeMs, 12)
+    })
+
+    await check('persist: история читается после переинициализации на той же папке', async () => {
+      storage.initStorage(histRoot)
+      const entries = await storage.listResponseHistory(P, REQ)
+      assert.equal(entries.length, 2)
+    })
+
+    await check('лимит глубины: 11-я запись вытесняет старейшую', async () => {
+      for (let i = 0; i < 11; i += 1) await storage.appendResponseHistory(P, 'req-limit', makeResponse(`{"n":${i}}`))
+      const entries = await storage.listResponseHistory(P, 'req-limit')
+      assert.equal(entries.length, 10)
+      assert.equal(entries[0].response.body, '{"n":10}')
+      assert.equal(entries[9].response.body, '{"n":1}', 'старейшая {"n":0} вытеснена')
+    })
+
+    await check('урезание тела: >100 КБ → bodyCut, исходный size сохранён', async () => {
+      const big = 'x'.repeat(150 * 1024)
+      await storage.appendResponseHistory(P, 'req-big', makeResponse(big))
+      const [entry] = await storage.listResponseHistory(P, 'req-big')
+      assert.equal(entry.response.body.length, 100 * 1024)
+      assert.equal(entry.response.bodyCut, true)
+      assert.equal(entry.response.size, 150 * 1024, 'исходный размер тела в size')
+    })
+
+    await check('бинарный content-type: тело не сохраняется, метаданные остаются', async () => {
+      await storage.appendResponseHistory(P, 'req-bin', {
+        ...makeResponse('raw-bytes'),
+        headers: [{ key: 'Content-Type', value: 'application/octet-stream' }]
+      })
+      const [entry] = await storage.listResponseHistory(P, 'req-bin')
+      assert.equal(entry.response.binary, true)
+      assert.equal(entry.response.body, null)
+      assert.equal(entry.response.size, Buffer.byteLength('raw-bytes'))
+    })
+
+    await check('текстовые content-type сохраняют тело (json, text/plain, без заголовка)', async () => {
+      await storage.appendResponseHistory(P, 'req-plain', {
+        ...makeResponse('привет'),
+        headers: [{ key: 'Content-Type', value: 'text/plain; charset=utf-8' }]
+      })
+      const [plain] = await storage.listResponseHistory(P, 'req-plain')
+      assert.equal(plain.response.body, 'привет')
+      assert.equal(plain.response.binary, undefined)
+
+      await storage.appendResponseHistory(P, 'req-noct', { ...makeResponse('нет заголовка'), headers: [] })
+      const [noct] = await storage.listResponseHistory(P, 'req-noct')
+      assert.equal(noct.response.body, 'нет заголовка')
+      assert.equal(noct.response.binary, undefined)
+    })
+
+    await check('неизвестный проект отклоняется в append и list', async () => {
+      await assert.rejects(() => storage.appendResponseHistory('nope', 'r', makeResponse('{}')), /Проект не найден/)
+      await assert.rejects(() => storage.listResponseHistory('nope', 'r'), /Проект не найден/)
+    })
+
+    await check('повреждённый файл истории: append пропускается, list бросает CORRUPT_STORAGE', async () => {
+      await storage.appendResponseHistory(P, 'req-corrupt', makeResponse('{}')) // создаёт валидный файл
+      const file = join(histRoot, 'history', P, 'req-corrupt.json')
+      await writeFile(file, '{ битый', 'utf8')
+      await storage.appendResponseHistory(P, 'req-corrupt', makeResponse('{"new":1}')) // не бросает, не пишет
+      const after = await readFile(file, 'utf8')
+      assert.equal(after, '{ битый', 'повреждённый файл не перезаписан')
+      await assert.rejects(
+        () => storage.listResponseHistory(P, 'req-corrupt'),
+        (err) => err.code === 'CORRUPT_STORAGE'
+      )
+    })
+
+    await check('параллельные append в одну историю: все записи учтены, tmp-остатков нет', async () => {
+      // 30 append по 5 параллельно: очередь сериализует read-modify-write,
+      // каждая запись видит результат предыдущей; в файле остаются последние 10.
+      for (let round = 0; round < 6; round += 1) {
+        await Promise.all(
+          Array.from({ length: 5 }, (_, k) =>
+            storage.appendResponseHistory(P, 'req-race', makeResponse(`{"r${round}-${k}"}`))
+          )
+        )
+      }
+      const entries = await storage.listResponseHistory(P, 'req-race')
+      assert.equal(entries.length, 10)
+      assert.ok(entries.every((e) => /^\{"r\d+-\d+"\}$/.test(e.response.body)), 'все тела из отправленных')
+      const leftovers = (await readdir(join(histRoot, 'history', P))).filter((f) => f.includes('.tmp'))
+      assert.equal(leftovers.length, 0, 'временных файлов не осталось')
+    })
+
+    await check('параллельные мутации файла проекта не теряют обновления', async () => {
+      const ids = ['p1', 'p2', 'p3']
+      for (let round = 0; round < 8; round += 1) {
+        await Promise.all(
+          ids.map((id) =>
+            storage.saveRequest(P, { id, name: `${id}-${round}`, method: 'GET', url: 'http://x', headers: [], params: [] })
+          )
+        )
+      }
+      const requests = await storage.listRequests(P)
+      for (const id of ids) {
+        const record = requests.find((r) => r.id === id)
+        assert.equal(record.name, `${id}-7`, 'последняя мутация каждого запроса в файле')
+      }
+    })
+
+    await check('заблокированный запрос пишет историю', async () => {
+      await storage.setRequestLocked(P, REQ, true)
+      await storage.appendResponseHistory(P, REQ, makeResponse('{"locked":true}'))
+      const entries = await storage.listResponseHistory(P, REQ)
+      assert.equal(entries[0].response.body, '{"locked":true}')
+      await storage.setRequestLocked(P, REQ, false)
+    })
+
+    await check('переименование проекта историю не трогает', async () => {
+      const before = await storage.listResponseHistory(P, REQ)
+      await storage.renameProject(P, 'Hist-renamed')
+      const after = await storage.listResponseHistory(P, REQ)
+      assert.deepEqual(after, before)
+    })
+
+    await check('удаление запроса удаляет файл истории; удаление проекта — каталог', async () => {
+      const P2 = (await storage.createProject('Hist2')).id
+      await storage.appendResponseHistory(P2, 'r1', makeResponse('{}'))
+      const dir2 = join(histRoot, 'history', P2)
+      await storage.deleteProject(P2)
+      await assert.rejects(() => readdir(dir2), (err) => err.code === 'ENOENT', 'каталог истории проекта удалён')
+
+      await storage.deleteRequest(P, REQ)
+      const leftFiles = await readdir(join(histRoot, 'history', P))
+      assert.equal(leftFiles.includes(`${REQ}.json`), false, 'файл истории запроса удалён')
+      assert.deepEqual(await storage.listResponseHistory(P, REQ), [])
+    })
+  } finally {
+    await rm(histRoot, { recursive: true, force: true })
   }
 
   console.log(`\nSMOKE OK: ${passed} проверок пройдено`)

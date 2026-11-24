@@ -36,7 +36,12 @@ function makeTab() {
     sending: false,
     requestId: null,
     response: null,
-    error: null
+    error: null,
+    // История ответов: проект запроса (фиксируется при открытии/сохранении — не активный,
+    // вкладки переживают переключение проекта), записи с диска и признак сбоя чтения.
+    projectId: null,
+    history: [],
+    historyError: false
   }
 }
 
@@ -165,9 +170,33 @@ export const useTabsStore = defineStore('tabs', {
         tab.dirty = true
       }
     },
-    // Открывает сохранённый запрос в новой вкладке: снимок + связь с сохранённым.
-    openSaved(request) {
-      return this.openTabFromSnapshot(request, request.name, request.id)
+    // Открывает сохранённый запрос в новой вкладке: снимок + связь с сохранённым
+    // и его проектом (для истории ответов; вызов loadHistory — у вызывающей стороны).
+    openSaved(request, projectId = null) {
+      const tab = this.openTabFromSnapshot(request, request.name, request.id)
+      tab.projectId = projectId
+      return tab
+    },
+
+    // Загружает историю ответов с диска. showLast показывает последний ответ
+    // с пометкой «из истории» (открытие запроса); при перезагрузке после отправки
+    // (showLast: false) живой ответ не трогается. Сбой чтения не блокирует работу.
+    async loadHistory(tabId, { showLast = true } = {}) {
+      const tab = this.tabs.find((t) => t.id === tabId)
+      if (!tab || !tab.projectId || !tab.savedRequestId) return
+      try {
+        tab.history = await window.api.history.list(tab.projectId, tab.savedRequestId)
+        tab.historyError = false
+      } catch {
+        tab.history = []
+        tab.historyError = true
+        return
+      }
+      const last = tab.history[0]
+      if (showLast && last) {
+        tab.response = { ...last.response, receivedAt: last.createdAt, fromHistory: true }
+        tab.error = null
+      }
     },
     // Новая вкладка из снимка (импорт curl, открытие сохранённого). runtime сброшен.
     openTabFromSnapshot(snapshot, name = '', savedRequestId = null) {
@@ -226,6 +255,8 @@ export const useTabsStore = defineStore('tabs', {
       const request = { id: tab.savedRequestId ?? crypto.randomUUID(), ...toSnapshot(tab), name }
       requests.items = await window.api.requests.save(projects.activeProjectId, request)
       tab.savedRequestId = request.id
+      // История пишется в проект сохранённого запроса, а не в активный на момент отправки.
+      tab.projectId = projects.activeProjectId
       tab.name = name
       tab.dirty = false
       return true
@@ -254,11 +285,14 @@ export const useTabsStore = defineStore('tabs', {
       this.activeTabId = tab.id
       return tab
     },
-    // Отвязывает вкладки от удалённого запроса: содержимое остаётся, связь исчезает.
+    // Отвязывает вкладки от удалённого запроса: содержимое остаётся, связь и история исчезают.
     detachSaved(requestId) {
       for (const tab of this.tabs) {
         if (tab.savedRequestId === requestId) {
           tab.savedRequestId = null
+          tab.projectId = null
+          tab.history = []
+          tab.historyError = false
           tab.dirty = false
         }
       }
@@ -279,13 +313,24 @@ export const useTabsStore = defineStore('tabs', {
         const vars = buildVars(
           environments.items.find((e) => e.id === environments.activeId)?.variables
         )
-        const result = await window.api?.http.send(requestId, applyEnvironment(toSnapshot(tab), vars))
+        // Цель истории: сохранённый запрос и его проект (не активный проект —
+        // вкладки переживают переключение); несохранённая вкладка историю не пишет.
+        const history =
+          tab.savedRequestId && tab.projectId
+            ? { projectId: tab.projectId, requestId: tab.savedRequestId }
+            : null
+        const result = await window.api?.http.send(requestId, applyEnvironment(toSnapshot(tab), vars), history)
         if (!result) {
           tab.error = { code: 'NETWORK', message: 'Мост main-процесса недоступен' }
           return
         }
-        if (result.ok) tab.response = result.response
-        else tab.error = result.error
+        if (result.ok) {
+          tab.response = result.response
+          // Список истории для переключателя; живой ответ не перезатирается (showLast: false).
+          this.loadHistory(tab.id, { showLast: false })
+        } else {
+          tab.error = result.error
+        }
       } catch (err) {
         tab.error = { code: 'NETWORK', message: String(err?.message ?? err) }
       } finally {
