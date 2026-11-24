@@ -2,13 +2,16 @@
 import { onMounted, provide, ref } from 'vue'
 import { parseCollection } from './lib/postman.js'
 import { useEnvironmentsStore } from './stores/environments.js'
+import { useMocksStore } from './stores/mocks.js'
 import { useProjectsStore } from './stores/projects.js'
 import { useTabsStore } from './stores/tabs.js'
+import { useUiStore } from './stores/ui.js'
 import Toolbar from './components/Toolbar.vue'
 import Sidebar from './components/Sidebar.vue'
 import RequestTabs from './components/RequestTabs.vue'
 import RequestEditor from './components/RequestEditor.vue'
 import ResponseView from './components/ResponseView.vue'
+import MockPanel from './components/MockPanel.vue'
 import AppDialog from './components/AppDialog.vue'
 import CurlImportDialog from './components/CurlImportDialog.vue'
 import AboutDialog from './components/AboutDialog.vue'
@@ -17,6 +20,8 @@ import SettingsPage from './components/SettingsPage.vue'
 const projects = useProjectsStore()
 const tabs = useTabsStore()
 const environments = useEnvironmentsStore()
+const mocks = useMocksStore()
+const ui = useUiStore()
 const dialog = ref(null)
 const curlImportVisible = ref(false)
 const aboutVisible = ref(false)
@@ -48,6 +53,10 @@ provide('dialog', dialog)
 onMounted(async () => {
   tabs.openStartTab()
   await projects.load()
+  // Мок-проекты и статус слушателя — лёгкие чтения: грузим при старте,
+  // чтобы вкладка «Мок-сервер» была готова к первому переключению.
+  mocks.load()
+  mocks.refreshStatus()
   window.api?.onMenu((action) => {
     if (action === 'new-project') newProject()
     if (action === 'save-request') tabs.saveActiveViaDialog(dialog.value)
@@ -68,17 +77,35 @@ async function newProject() {
   if (name === null) return
   await projects.create(name)
 }
+
+async function newMockProject() {
+  const name = await dialog.value.prompt({
+    title: 'Новый мок-проект',
+    label: 'Имя мок-проекта',
+    value: '',
+    confirmText: 'Создать'
+  })
+  if (name === null) return
+  try {
+    await mocks.create(name)
+  } catch (error) {
+    await dialog.value.alert({ title: 'Новый мок-проект', message: error?.message ?? 'Не удалось создать мок-проект' })
+  }
+}
 </script>
 
 <template>
   <div class="app">
     <Toolbar />
     <div class="app-main">
-      <Sidebar @new-project="newProject" />
+      <Sidebar @new-project="newProject" @new-mock-project="newMockProject" />
       <main class="editor-area">
-        <RequestTabs />
-        <RequestEditor />
-        <ResponseView />
+        <template v-if="ui.view === 'requests'">
+          <RequestTabs />
+          <RequestEditor />
+          <ResponseView />
+        </template>
+        <MockPanel v-else />
       </main>
     </div>
     <AppDialog ref="dialog" />

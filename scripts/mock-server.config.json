@@ -1,0 +1,9 @@
+{
+  "routes": [
+    { "method": "GET", "path": "/api/users", "status": 200, "body": { "users": [ { "id": 1, "name": "Алиса" }, { "id": 2, "name": "Борис" } ] } },
+    { "method": "POST", "path": "/api/users", "status": 201, "headers": { "X-Request-Id": "mock-1" }, "body": { "ok": true, "id": 3 } },
+    { "method": "GET", "path": "/api/slow", "status": 200, "delayMs": 3000, "body": { "note": "ответ с задержкой 3с — проверка таймаутов" } },
+    { "method": "GET", "path": "/api/error", "status": 500, "body": { "error": "internal error" } }
+  ],
+  "defaultResponse": { "status": 404, "body": { "error": "Нет маршрута" } }
+}

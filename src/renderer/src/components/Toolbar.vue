@@ -26,6 +26,26 @@ function select(event) {
   <header class="toolbar">
     <div class="toolbar-brand"><span class="brand-accent">Request</span> Lite</div>
     <div class="toolbar-center">
+      <div class="view-switch" role="tablist" aria-label="Вид приложения">
+        <button
+          class="view-switch-btn"
+          :class="{ active: ui.view === 'requests' }"
+          role="tab"
+          :aria-selected="ui.view === 'requests'"
+          @click="ui.setView('requests')"
+        >
+          Запросы
+        </button>
+        <button
+          class="view-switch-btn"
+          :class="{ active: ui.view === 'mocks' }"
+          role="tab"
+          :aria-selected="ui.view === 'mocks'"
+          @click="ui.setView('mocks')"
+        >
+          Мок-сервер
+        </button>
+      </div>
       <select
         class="env-select"
         :value="environments.activeId ?? ''"

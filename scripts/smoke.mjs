@@ -17,6 +17,7 @@ const curl = await import('../src/renderer/src/lib/curl.js')
 const snippets = await import('../src/renderer/src/lib/snippets.js')
 const postman = await import('../src/renderer/src/lib/postman.js')
 const mcp = await import('../src/main/mcp.js')
+const mock = await import('../src/main/mock.js')
 
 let passed = 0
 
@@ -1941,6 +1942,274 @@ try {
   } finally {
     await mcp.stopMcpServer()
     await rm(mcpRoot, { recursive: true, force: true })
+  }
+
+  // --- Мок-сервер: хранилище мок-проектов (секция в src/main/storage.js) ---
+
+  const mockRoot = await mkdtemp(join(tmpdir(), 'postman-lite-smoke-mock-'))
+  storage.initStorage(mockRoot)
+  await storage.bootstrap()
+
+  await check('createMockProject создаёт мок-проект и файл с пустыми маршрутами', async () => {
+    const project = await storage.createMockProject('Demo')
+    assert.equal(project.name, 'Demo')
+    assert.ok(project.id)
+    const file = JSON.parse(await readFile(join(mockRoot, 'mock-projects', `${project.id}.json`), 'utf8'))
+    assert.deepEqual(file, { routes: [], defaultResponse: null })
+    const index = JSON.parse(await readFile(join(mockRoot, 'mock-projects.json'), 'utf8'))
+    assert.equal(index.length, 1)
+  })
+
+  await check('createMockProject отклоняет пустое имя', async () => {
+    await assert.rejects(() => storage.createMockProject('   '), /пустым/)
+  })
+
+  await check('renameMockProject отклоняет пустое имя и неизвестный id', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await assert.rejects(() => storage.renameMockProject(project.id, '  '), /пустым/)
+    await assert.rejects(() => storage.renameMockProject('nope', 'X'), /не найден/)
+  })
+
+  await check('saveMockProjectConfig нормализует маршруты и пишет на диск', async () => {
+    const project = (await storage.listMockProjects())[0]
+    const stored = await storage.saveMockProjectConfig(project.id, {
+      routes: [
+        { id: 'r1', method: 'get', path: '/api/users', status: 200, headers: [{ id: 'h1', key: 'X-K', value: 'v' }], body: '{"ok":1}', delayMs: 0 },
+        { method: null, path: '/any' }
+      ],
+      defaultResponse: { status: 404, body: null }
+    })
+    assert.equal(stored.routes[0].method, 'GET')
+    assert.equal(stored.routes[0].headers[0].enabled, true)
+    assert.equal(stored.routes[1].status, 200, 'статус по умолчанию 200')
+    assert.equal(stored.routes[1].method, null)
+    assert.equal(stored.routes[1].body, null)
+    assert.deepEqual(stored.defaultResponse, { status: 404, body: null })
+    const file = JSON.parse(await readFile(join(mockRoot, 'mock-projects', `${project.id}.json`), 'utf8'))
+    assert.equal(file.routes.length, 2)
+  })
+
+  await check('saveMockProjectConfig отклоняет пустой путь и невалидный статус', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await assert.rejects(() => storage.saveMockProjectConfig(project.id, { routes: [{ path: '   ' }] }), /маршрута не может быть пустым/)
+    await assert.rejects(() => storage.saveMockProjectConfig(project.id, { routes: [{ path: '/x', status: 99 }] }), /100–599/)
+    await assert.rejects(() => storage.saveMockProjectConfig(project.id, { routes: [{ path: '/x', delayMs: -5 }] }), /неотриц/)
+    await assert.rejects(() => storage.saveMockProjectConfig('nope', { routes: [] }), /не найден/)
+  })
+
+  await check('renameMockProject сохраняет маршруты', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await storage.renameMockProject(project.id, 'Переименованный')
+    const list = await storage.listMockProjects()
+    assert.equal(list[0].name, 'Переименованный')
+    const config = await storage.getMockProject(project.id)
+    assert.equal(config.routes.length, 2)
+  })
+
+  await check('getMockProject неизвестного id возвращает null', async () => {
+    assert.equal(await storage.getMockProject('nope'), null)
+  })
+
+  await check('deleteMockProject удаляет запись индекса и файл', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await storage.deleteMockProject(project.id)
+    assert.deepEqual(await storage.listMockProjects(), [])
+    await assert.rejects(() => readFile(join(mockRoot, 'mock-projects', `${project.id}.json`), 'utf8'), /ENOENT/)
+  })
+
+  // --- Мок-сервер: жизненный цикл, обработка запросов, журнал (src/main/mock.js) ---
+
+  const mockPort = await takeFreePort()
+  const mockProject = await storage.createMockProject('Server')
+  const mockProject2 = await storage.createMockProject('Server 2')
+
+  const mockFetch = (path, init) => fetch(`http://127.0.0.1:${mockPort}${path}`, init)
+  let mockPort2 = null
+
+  try {
+    await check('старт на неизвестном мок-проекте — ошибка', async () => {
+      await assert.rejects(() => mock.startMockServer({ projectId: 'nope', port: mockPort }), /не найден/)
+    })
+
+    await check('запуск сервера: статус running с адресом на 127.0.0.1', async () => {
+      await storage.saveMockProjectConfig(mockProject.id, {
+        routes: [
+          { method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' },
+          { method: null, path: '/any', status: 204 }
+        ],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+      const status = await mock.startMockServer({ projectId: mockProject.id, port: mockPort })
+      assert.equal(status.state, 'running')
+      assert.equal(status.address, `http://127.0.0.1:${mockPort}`)
+      assert.equal(status.projectId, mockProject.id)
+    })
+
+    await check('лог пуст до первого запроса', async () => {
+      assert.deepEqual(mock.getMockLog(), [])
+    })
+
+    await check('ответ по маршруту: статус, тело, content-type по умолчанию', async () => {
+      const res = await mockFetch('/api/users')
+      assert.equal(res.status, 200)
+      assert.match(res.headers.get('content-type'), /application\/json/)
+      assert.deepEqual(await res.json(), { users: [1] })
+    })
+
+    await check('query-строка не влияет на матчинг', async () => {
+      const res = await mockFetch('/api/users?x=1&y=2')
+      assert.equal(res.status, 200)
+      assert.deepEqual(await res.json(), { users: [1] })
+    })
+
+    await check('маршрут без метода отвечает на любой метод', async () => {
+      const res = await mockFetch('/any', { method: 'POST', headers: { 'X-Custom': 'abc' }, body: '{"a":1}' })
+      assert.equal(res.status, 204)
+    })
+
+    await check('неотматченный запрос — ответ по умолчанию', async () => {
+      const res = await mockFetch('/missing')
+      assert.equal(res.status, 418)
+      assert.deepEqual(await res.json(), { teapot: true })
+    })
+
+    await check('заголовки маршрута попадают в ответ и перекрывают content-type', async () => {
+      await mock.applyMockConfig({
+        routes: [{ method: 'GET', path: '/plain', status: 200, headers: [{ key: 'Content-Type', value: 'text/plain' }, { key: 'X-Request-Id', value: 'mock-1' }], body: 'привет' }],
+        defaultResponse: { status: 404, body: null }
+      })
+      const res = await mockFetch('/plain')
+      assert.equal(res.headers.get('content-type'), 'text/plain')
+      assert.equal(res.headers.get('x-request-id'), 'mock-1')
+      assert.equal(await res.text(), 'привет')
+      // возвращаем исходную конфигурацию для следующих проверок
+      await mock.applyMockConfig({
+        routes: [
+          { method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' },
+          { method: null, path: '/any', status: 204 }
+        ],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+    })
+
+    await check('applyMockConfig меняет ответ без рестарта сервера', async () => {
+      await mock.applyMockConfig({
+        routes: [{ method: 'GET', path: '/api/users', status: 200, body: '{"v":2}' }],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+      const res = await mockFetch('/api/users')
+      assert.deepEqual(await res.json(), { v: 2 })
+      const status = await mock.applyMockConfig({ routes: [{ method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' }], defaultResponse: { status: 418, body: '{"teapot":true}' } })
+      assert.equal(status.state, 'running')
+    })
+
+    await check('задержка маршрута откладывает ответ', async () => {
+      await mock.applyMockConfig({
+        routes: [{ method: 'GET', path: '/slow', status: 200, body: '{"ok":1}', delayMs: 700 }],
+        defaultResponse: null
+      })
+      const started = Date.now()
+      const res = await mockFetch('/slow')
+      assert.ok(Date.now() - started >= 650, 'ответ пришёл раньше задержки')
+      assert.deepEqual(await res.json(), { ok: 1 })
+      await mock.applyMockConfig({
+        routes: [
+          { method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' },
+          { method: null, path: '/any', status: 204 }
+        ],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+    })
+
+    await check('журнал: тело распарсено, заголовки сохранены, метод и путь на месте', async () => {
+      const res = await mockFetch('/any?x=1', { method: 'POST', headers: { 'X-Custom': 'abc', 'content-type': 'application/json' }, body: '{"name":"Тест"}' })
+      assert.equal(res.status, 204)
+      const log = mock.getMockLog()
+      assert.equal(log.length, 8)
+      const last = log[log.length - 1]
+      assert.equal(last.method, 'POST')
+      assert.equal(last.url, '/any?x=1')
+      assert.equal(last.headers['x-custom'], 'abc')
+      assert.deepEqual(last.body, { name: 'Тест' })
+      assert.ok(last.ts)
+    })
+
+    await check('журнал: тело без JSON хранится сырой строкой', async () => {
+      await mockFetch('/api/users', { method: 'POST', body: 'plain text' })
+      const last = mock.getMockLog().at(-1)
+      assert.equal(last.body, 'plain text')
+    })
+
+    await check('занятый порт — статус error с сообщением, сервер не запущен', async () => {
+      const blocker = createServer()
+      await new Promise((resolve) => blocker.listen(0, '127.0.0.1', resolve))
+      const busyPort = blocker.address().port
+      const status = await mock.startMockServer({ projectId: mockProject2.id, port: busyPort })
+      assert.equal(status.state, 'error')
+      assert.match(status.message, /занят/)
+      blocker.closeAllConnections()
+      await new Promise((resolve) => blocker.close(resolve))
+      // Попытка занятого порта остановила предыдущий слушатель — поднимаем снова для следующих проверок.
+      const restored = await mock.startMockServer({ projectId: mockProject.id, port: mockPort })
+      assert.equal(restored.state, 'running')
+    })
+
+    await check('некорректный порт отклоняется валидацией', async () => {
+      await assert.rejects(() => mock.startMockServer({ projectId: mockProject2.id, port: 80 }), /1024–65535/)
+    })
+
+    await check('журнал: лимит буфера вытесняет самые старые записи', async () => {
+      mock.clearMockLog()
+      // Последовательно: сотни параллельных fetch у undici рвутся с ECONNRESET (ограничение клиента, не сервера).
+      for (let i = 0; i < 505; i += 1) await mockFetch(`/api/users?bulk=${i}`)
+      const log = mock.getMockLog()
+      assert.equal(log.length, 500)
+      assert.equal(log[0].url, '/api/users?bulk=5', 'старейшие записи вытеснены')
+      assert.equal(log[log.length - 1].url, '/api/users?bulk=504')
+      assert.ok(!log.some((e) => e.url === '/api/users?bulk=0'))
+    })
+
+    await check('clear обнуляет журнал', async () => {
+      assert.equal(mock.clearMockLog(), true)
+      assert.deepEqual(mock.getMockLog(), [])
+      await mockFetch('/api/users')
+      assert.equal(mock.getMockLog().length, 1)
+    })
+
+    await check('setLogListener получает каждую новую запись', async () => {
+      const seen = []
+      mock.setLogListener((entry) => seen.push(entry))
+      await mockFetch('/api/users')
+      assert.equal(seen.length, 1)
+      assert.equal(seen[0].url, '/api/users')
+      mock.setLogListener(null)
+      await mockFetch('/api/users')
+      assert.equal(seen.length, 1)
+    })
+
+    await check('переключение мок-проекта останавливает старый и стартует новый', async () => {
+      await storage.saveMockProjectConfig(mockProject2.id, { routes: [{ method: 'GET', path: '/second', status: 201, body: '{"n":2}' }], defaultResponse: null })
+      const newPort = await takeFreePort()
+      const status = await mock.startMockServer({ projectId: mockProject2.id, port: newPort })
+      assert.equal(status.state, 'running')
+      assert.equal(status.port, newPort)
+      assert.equal(status.projectId, mockProject2.id)
+      const old = await mockFetch('/api/users').catch(() => null)
+      assert.equal(old, null, 'старый порт закрыт')
+      const res = await fetch(`http://127.0.0.1:${newPort}/second`)
+      assert.equal(res.status, 201)
+      mockPort2 = newPort
+    })
+
+    await check('остановка: статус stopped, порт закрыт', async () => {
+      const status = await mock.stopMockServer()
+      assert.equal(status.state, 'stopped')
+      const res = await fetch(`http://127.0.0.1:${mockPort2}/second`).catch(() => null)
+      assert.equal(res, null)
+    })
+  } finally {
+    await mock.stopMockServer()
+    await rm(mockRoot, { recursive: true, force: true })
   }
 
   console.log(`\nSMOKE OK: ${passed} проверок пройдено`)

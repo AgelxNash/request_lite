@@ -27,6 +27,7 @@ export async function bootstrap() {
 
 async function ensureDirs() {
   await mkdir(join(getStorageRoot(), 'projects'), { recursive: true })
+  await mkdir(join(getStorageRoot(), 'mock-projects'), { recursive: true })
 }
 
 // Атомарная запись: сначала во временный файл, затем rename поверх целевого.
@@ -69,6 +70,8 @@ async function readJson(filePath, fallback) {
 
 const indexPath = () => join(getStorageRoot(), 'projects.json')
 const projectPath = (id) => join(getStorageRoot(), 'projects', `${id}.json`)
+const mockIndexPath = () => join(getStorageRoot(), 'mock-projects.json')
+const mockProjectPath = (id) => join(getStorageRoot(), 'mock-projects', `${id}.json`)
 const settingsPath = () => join(getStorageRoot(), 'settings.json')
 
 // --- Проекты ---
@@ -392,6 +395,110 @@ export async function setActiveEnvironment(projectId, environmentId) {
   const activeEnvId = environmentId
   await writeJsonAtomic(projectPath(projectId), { ...project, activeEnvId })
   return { environments, activeEnvId }
+}
+
+// --- Мок-проекты ---
+
+// Мок-проект: индекс-запись {id, name, createdAt, updatedAt} в mock-projects.json
+// (порядок массива = порядок в списке) и файл mock-projects/<id>.json
+// {routes, defaultResponse}. В отличие от проектов запросов — без locked/pinned
+// и без перетаскивания (осознанное ограничение v1, см. design.md D4).
+
+// Нормализация маршрута: строгие типы и валидация до записи на диск.
+// Матчинг сервера — первый совпавший маршрут в порядке массива, поэтому
+// дубликаты method+path не валидируются на уникальность.
+function normalizeMockRoute(route) {
+  const path = String(route?.path ?? '').trim()
+  if (!path) throw new Error('Путь маршрута не может быть пустым')
+  const method = route?.method == null || route.method === '' ? null : String(route.method).trim().toUpperCase()
+  const status = Number.isInteger(route?.status) ? route.status : 200
+  if (status < 100 || status > 599) throw new Error('Статус маршрута должен быть целым числом 100–599')
+  const delayMs = route?.delayMs == null || route.delayMs === '' ? 0 : route.delayMs
+  if (!Number.isInteger(delayMs) || delayMs < 0) {
+    throw new Error('Задержка маршрута должна быть целым неотрицательным числом миллисекунд')
+  }
+  return {
+    id: String(route?.id ?? randomUUID()),
+    method,
+    path,
+    status,
+    headers: (route?.headers ?? []).map((h) => ({
+      id: String(h?.id ?? randomUUID()),
+      key: String(h?.key ?? ''),
+      value: String(h?.value ?? ''),
+      enabled: h?.enabled !== false
+    })),
+    body: route?.body == null || route.body === '' ? null : String(route.body),
+    delayMs
+  }
+}
+
+function normalizeMockConfig(config) {
+  const routes = (config?.routes ?? []).map(normalizeMockRoute)
+  let defaultResponse = null
+  if (config?.defaultResponse) {
+    const status = Number.isInteger(config.defaultResponse.status) ? config.defaultResponse.status : 404
+    if (status < 100 || status > 599) throw new Error('Статус ответа по умолчанию должен быть целым числом 100–599')
+    defaultResponse = {
+      status,
+      body: config.defaultResponse.body == null || config.defaultResponse.body === '' ? null : String(config.defaultResponse.body)
+    }
+  }
+  return { routes, defaultResponse }
+}
+
+export async function listMockProjects() {
+  await ensureDirs()
+  return readJson(mockIndexPath(), [])
+}
+
+export async function createMockProject(name) {
+  const trimmed = String(name ?? '').trim()
+  if (!trimmed) throw new Error('Имя мок-проекта не может быть пустым')
+  await ensureDirs()
+  const now = new Date().toISOString()
+  const project = { id: randomUUID(), name: trimmed, createdAt: now, updatedAt: now }
+  const projects = await listMockProjects()
+  projects.push(project)
+  await writeJsonAtomic(mockIndexPath(), projects)
+  await writeJsonAtomic(mockProjectPath(project.id), { routes: [], defaultResponse: null })
+  return project
+}
+
+export async function renameMockProject(id, name) {
+  const trimmed = String(name ?? '').trim()
+  if (!trimmed) throw new Error('Имя мок-проекта не может быть пустым')
+  const projects = await listMockProjects()
+  const project = projects.find((p) => p.id === id)
+  if (!project) throw new Error(`Мок-проект не найден: ${id}`)
+  project.name = trimmed
+  project.updatedAt = new Date().toISOString()
+  await writeJsonAtomic(mockIndexPath(), projects)
+  return project
+}
+
+export async function deleteMockProject(id) {
+  const projects = await listMockProjects()
+  const project = projects.find((p) => p.id === id)
+  if (!project) throw new Error(`Мок-проект не найден: ${id}`)
+  const next = projects.filter((p) => p.id !== id)
+  await writeJsonAtomic(mockIndexPath(), next)
+  await rm(mockProjectPath(id), { force: true })
+  return true
+}
+
+export async function getMockProject(id) {
+  return readJson(mockProjectPath(id), null)
+}
+
+// Сохранение конфигурации мок-проекта целиком (маршруты + ответ по умолчанию).
+// Валидация и нормализация до записи: невалидный маршрут не попадает на диск.
+export async function saveMockProjectConfig(id, config) {
+  const project = await getMockProject(id)
+  if (!project) throw new Error(`Мок-проект не найден: ${id}`)
+  const stored = normalizeMockConfig(config)
+  await writeJsonAtomic(mockProjectPath(id), stored)
+  return stored
 }
 
 // --- Настройки ---
