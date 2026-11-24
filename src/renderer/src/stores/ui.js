@@ -2,11 +2,17 @@ import { defineStore } from 'pinia'
 
 // Тема интерфейса: тёмная (по умолчанию) и светлая.
 // Значение применяется через data-theme на <html>; цвета описаны CSS-переменными в style.css.
+// view — вид основной области: 'requests' (редактор запросов) | 'mocks' (мок-сервер).
+// Runtime-состояние сессии: в settings не сохраняется, при перезапуске — «Запросы».
 export const useUiStore = defineStore('ui', {
   state: () => ({
-    theme: 'dark'
+    theme: 'dark',
+    view: 'requests'
   }),
   actions: {
+    setView(view) {
+      this.view = view === 'mocks' ? 'mocks' : 'requests'
+    },
     applyInitialTheme(settings) {
       this.theme = settings?.theme === 'light' ? 'light' : 'dark'
       this.applyToDom()

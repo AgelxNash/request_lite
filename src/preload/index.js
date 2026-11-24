@@ -58,12 +58,35 @@ const api = {
     // {enabled?, port?, regenerateToken?} → свежий статус после применения
     setConfig: (patch) => ipcRenderer.invoke('mcp:setConfig', patch)
   },
+  mocks: {
+    listProjects: () => ipcRenderer.invoke('mocks:listProjects'),
+    createProject: (name) => ipcRenderer.invoke('mocks:createProject', name),
+    renameProject: (id, name) => ipcRenderer.invoke('mocks:renameProject', { id, name }),
+    deleteProject: (id) => ipcRenderer.invoke('mocks:deleteProject', id),
+    getProject: (id) => ipcRenderer.invoke('mocks:getProject', id),
+    // {id, config} → сохранённая конфигурация; запущенный сервер применяет её на лету,
+    // если слушатель работает на этом же мок-проекте.
+    saveProject: (id, config) => ipcRenderer.invoke('mocks:saveProject', { id, config }),
+    getStatus: () => ipcRenderer.invoke('mocks:getStatus'),
+    // Старт не бросает: занятый порт/невалидный порт — статус {state:'error', message}
+    start: (projectId, port) => ipcRenderer.invoke('mocks:start', { projectId, port }),
+    stop: () => ipcRenderer.invoke('mocks:stop'),
+    getLog: () => ipcRenderer.invoke('mocks:getLog'),
+    clearLog: () => ipcRenderer.invoke('mocks:clearLog')
+  },
   openDataFolder: () => ipcRenderer.invoke('data:openFolder'),
+  history: {
+    // История ответов сохранённого запроса: записи от новых к старым ({createdAt, response}).
+    list: (projectId, requestId) => ipcRenderer.invoke('history:list', { projectId, requestId })
+  },
   http: {
     // requestId генерирует renderer и знает его ДО отправки — иначе Cancel во время
-    // выполнения не сможет указать, какой запрос прервать.
-    send: (requestId, request) =>
-      ipcRenderer.invoke('http:request', { requestId, request }).then((result) => ({ requestId, ...result })),
+    // выполнения не сможет указать, какой запрос прервать. history — цель записи
+    // истории {projectId, requestId} или null (несохранённая вкладка).
+    send: (requestId, request, history) =>
+      ipcRenderer
+        .invoke('http:request', { requestId, request, history })
+        .then((result) => ({ requestId, ...result })),
     cancel: (requestId) => ipcRenderer.invoke('http:cancel', requestId)
   },
   onMenu: (callback) => {
@@ -73,6 +96,10 @@ const api = {
     ipcRenderer.on('menu:import-postman', () => callback('import-postman'))
     ipcRenderer.on('menu:settings', () => callback('settings'))
     ipcRenderer.on('menu:about', () => callback('about'))
+  },
+  // Push-журнал мок-сервера: каждая принятая запросом запись приходит сама
+  onMockLog: (callback) => {
+    ipcRenderer.on('mocks:log', (_event, entry) => callback(entry))
   }
 }
 

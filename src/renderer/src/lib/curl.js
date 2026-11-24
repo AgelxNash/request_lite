@@ -1,6 +1,7 @@
 // Конвертация запрос ↔ curl — чистый модуль без зависимостей (smoke-тесты гоняют в Node).
 // Парсер: shell-токенизация + флаги curl. Генератор: одинарные кавычки с экранированием.
 // Переменные {{var}} переносятся литерально в обе стороны.
+// Общие помощники экспорта (buildUrlForExport, exportHeaders) использует и lib/snippets.js.
 
 let nextRowId = 1
 
@@ -298,7 +299,7 @@ function q(value) {
 
 // Строит URL с query-параметрами (params и apikey в query) без их потери.
 // Шаблонный URL с {{var}} — не валидный URL для new URL: добавляем пары строкой.
-function buildUrlForExport(snapshot) {
+export function buildUrlForExport(snapshot) {
   const queryRows = []
   for (const row of snapshot.params ?? []) {
     if (row.enabled === false || String(row.key ?? '') === '') continue
@@ -321,6 +322,35 @@ function buildUrlForExport(snapshot) {
   }
 }
 
+// Заголовки экспорта → [{key, value}]: авто Content-Type для json/text (если пользователь
+// не задал свой), авторизация заголовком (bearer, apikey не в query), затем пользовательские.
+// Выключенные строки и строки без имени пропускаются. Basic не входит: curl передаёт его
+// через -u, сниппеты — штатной опцией клиента или заголовком.
+export function exportHeaders(snapshot, { carriesBody }) {
+  const auth = snapshot.auth ?? { type: 'none' }
+  const userHeaders = (snapshot.headers ?? []).filter((h) => h.enabled !== false && String(h.key ?? '') !== '')
+  const userHasContentType = userHeaders.some((h) => h.key.toLowerCase() === 'content-type')
+
+  const bodyType = (snapshot.body ?? { type: 'none' }).type ?? 'none'
+  const result = []
+  if (carriesBody && bodyType === 'json' && !userHasContentType) {
+    result.push({ key: 'Content-Type', value: 'application/json' })
+  }
+  if (carriesBody && bodyType === 'text' && !userHasContentType) {
+    result.push({ key: 'Content-Type', value: 'text/plain' })
+  }
+  if (auth.type === 'bearer' && String(auth.token ?? '') !== '') {
+    result.push({ key: 'Authorization', value: `Bearer ${auth.token}` })
+  }
+  if (auth.type === 'apikey' && auth.placement !== 'query' && String(auth.key ?? '') !== '') {
+    result.push({ key: auth.key, value: auth.value ?? '' })
+  }
+  for (const header of userHeaders) {
+    result.push({ key: header.key, value: header.value ?? '' })
+  }
+  return result
+}
+
 // Команда curl из снимка. Значения экранируются; {{var}} остаётся литерально.
 export function generateCurl(snapshot) {
   const url = buildUrlForExport(snapshot)
@@ -334,29 +364,12 @@ export function generateCurl(snapshot) {
     parts.push('-u', q(`${auth.username ?? ''}:${auth.password ?? ''}`))
   }
 
-  const headers = (snapshot.headers ?? []).filter((h) => h.enabled !== false && String(h.key ?? '') !== '')
-  const userHasContentType = headers.some((h) => h.key.toLowerCase() === 'content-type')
-
   const body = snapshot.body ?? { type: 'none' }
   const bodyType = body.type ?? 'none'
   const carriesBody = method !== 'GET' && method !== 'HEAD' && bodyType !== 'none'
 
-  if (carriesBody && bodyType === 'json' && !userHasContentType) {
-    parts.push('-H', q('Content-Type: application/json'))
-  }
-  if (carriesBody && bodyType === 'text' && !userHasContentType) {
-    parts.push('-H', q('Content-Type: text/plain'))
-  }
-
-  if (auth.type === 'bearer' && String(auth.token ?? '') !== '') {
-    parts.push('-H', q(`Authorization: Bearer ${auth.token}`))
-  }
-  if (auth.type === 'apikey' && auth.placement !== 'query' && String(auth.key ?? '') !== '') {
-    parts.push('-H', q(`${auth.key}: ${auth.value ?? ''}`))
-  }
-
-  for (const header of headers) {
-    parts.push('-H', q(`${header.key}: ${header.value ?? ''}`))
+  for (const header of exportHeaders(snapshot, { carriesBody })) {
+    parts.push('-H', q(`${header.key}: ${header.value}`))
   }
 
   if (carriesBody) {

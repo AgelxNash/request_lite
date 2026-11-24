@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
+import { runInNewContext } from 'node:vm'
 
 const storage = await import('../src/main/storage.js')
 const http = await import('../src/main/http.js')
@@ -13,8 +14,10 @@ const defaults = await import('../src/renderer/src/lib/defaults.js')
 const requestName = await import('../src/renderer/src/lib/request-name.js')
 const variables = await import('../src/renderer/src/lib/variables.js')
 const curl = await import('../src/renderer/src/lib/curl.js')
+const snippets = await import('../src/renderer/src/lib/snippets.js')
 const postman = await import('../src/renderer/src/lib/postman.js')
 const mcp = await import('../src/main/mcp.js')
+const mock = await import('../src/main/mock.js')
 
 let passed = 0
 
@@ -1225,6 +1228,80 @@ try {
       assert.ok(!getWithBody.includes('-d'), 'GET не несёт тела')
     })
 
+    // Characterize: точный вывод generateCurl на момент выноса общих помощников экспорта
+    // (lib/snippets.js пользуется ими же). Строки сняты с реализации до её правки.
+    await check('generateCurl: characterize — точный вывод (порядок -H, авто Content-Type, -u, query)', () => {
+      assert.equal(
+        curl.generateCurl({
+          method: 'POST',
+          url: '{{baseUrl}}/users',
+          params: [{ id: 'p1', key: 'page', value: '2', enabled: true }],
+          headers: [{ id: 'h1', key: 'X-Note', value: `it's fine`, enabled: true }],
+          body: { type: 'json', json: '{"name":"Ann"}', form: [], urlencoded: [], text: '' },
+          auth: { type: 'bearer', token: 't-1' },
+          sslVerify: true
+        }),
+        `curl '{{baseUrl}}/users?page=2' -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer t-1' -H 'X-Note: it'\\''s fine' -d '{"name":"Ann"}'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'PUT',
+          url: 'https://x.test/items/1',
+          params: [],
+          headers: [
+            { id: 'h1', key: 'Content-Type', value: 'application/x-www-form-urlencoded; charset=utf-8', enabled: true },
+            { id: 'h2', key: 'X-Skip', value: 'no', enabled: false },
+            { id: 'h3', key: '', value: 'no-name', enabled: true }
+          ],
+          body: { type: 'urlencoded', json: '', form: [], text: '', urlencoded: [
+            { id: 'u1', key: 'a', value: '1', enabled: true },
+            { id: 'u2', key: 'b', value: 'x y', enabled: true }
+          ] },
+          auth: { type: 'apikey', key: 'X-Api-Key', value: 'k-1', placement: 'header' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/items/1' -X PUT -H 'X-Api-Key: k-1' -H 'Content-Type: application/x-www-form-urlencoded; charset=utf-8' --data-urlencode 'a=1' --data-urlencode 'b=x y'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'POST',
+          url: 'https://x.test/notes',
+          params: [],
+          headers: [{ id: 'h1', key: 'content-type', value: 'text/markdown', enabled: true }],
+          body: { type: 'text', json: '', form: [], urlencoded: [], text: 'hello' },
+          auth: { type: 'basic', username: 'user', password: 'p@ss' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/notes' -X POST -u 'user:p@ss' -H 'content-type: text/markdown' -d 'hello'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'POST',
+          url: 'https://x.test/upload?existing=1',
+          params: [{ id: 'p1', key: 'page', value: '2', enabled: true }],
+          headers: [{ id: 'h1', key: 'X-Trace', value: 'abc', enabled: true }],
+          body: { type: 'form-data', json: '', text: '', urlencoded: [], form: [
+            { id: 'f1', key: 'field1', value: 'value1', enabled: true }
+          ] },
+          auth: { type: 'apikey', key: 'api_key', value: 'k-1', placement: 'query' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/upload?existing=1&page=2&api_key=k-1' -X POST -H 'X-Trace: abc' -F 'field1=value1'`
+      )
+      assert.equal(
+        curl.generateCurl({
+          method: 'HEAD',
+          url: 'https://x.test/ping',
+          params: [],
+          headers: [],
+          body: { type: 'json', json: '{"x":1}', form: [], urlencoded: [], text: '' },
+          auth: { type: 'bearer', token: 't-1' },
+          sslVerify: true
+        }),
+        `curl 'https://x.test/ping' -X HEAD -H 'Authorization: Bearer t-1'`
+      )
+    })
+
     await check('curl round-trip: parse(generate(snapshot)) воспроизводит запрос', () => {
       const original = {
         name: 'Demo',
@@ -1259,6 +1336,381 @@ try {
       assert.equal(clientId.value, 'ab c&d', '--data-urlencode ↔ URLSearchParams кодирование согласовано')
       assert.equal(parsed.auth.type, 'basic')
       assert.equal(parsed.auth.password, 'pass word')
+    })
+
+    // --- Сниппеты кода (lib/snippets.js) ---
+    // Текст сниппета — строки с одним завершающим переводом строки.
+    const snippetText = (...lines) => `${lines.join('\n')}\n`
+    const LANGS = ['fetch', 'axios', 'python']
+    // Канонический снимок из design D4 (change add-code-snippets).
+    const canonical = {
+      method: 'POST',
+      url: '{{baseUrl}}/users',
+      params: [],
+      headers: [],
+      body: { type: 'json', json: '{"name":"Ann"}', form: [], urlencoded: [], text: '' },
+      auth: { type: 'bearer', token: 't-1' }
+    }
+    const snippet = (snapshot, lang) => snippets.generateSnippet(snapshot, lang)
+
+    await check('generateSnippet: метод, URL с params и apikey (сценарии спеки)', () => {
+      const plain = { method: 'PUT', url: 'https://x.test/items/1', params: [], headers: [], body: { type: 'none' }, auth: { type: 'none' } }
+      assert.ok(snippet(plain, 'fetch').includes(`method: 'PUT'`))
+      assert.ok(snippet(plain, 'axios').includes(`method: 'put'`))
+      assert.ok(snippet(plain, 'python').includes(`requests.put(`))
+      assert.ok(
+        snippet({ ...plain, method: 'PROPFIND' }, 'python').includes(`requests.request('PROPFIND', url)`),
+        'метод без короткой формы — через requests.request'
+      )
+
+      const withParams = {
+        ...plain,
+        method: 'GET',
+        url: 'https://api.example.com/users',
+        params: [
+          { id: 'p1', key: 'page', value: '2', enabled: true },
+          { id: 'p2', key: 'token', value: 'abc', enabled: false }
+        ]
+      }
+      for (const lang of LANGS) {
+        const text = snippet(withParams, lang)
+        assert.ok(text.includes(`'https://api.example.com/users?page=2'`), `${lang}: params в URL`)
+        assert.ok(!text.includes('token=abc'), `${lang}: выключенный параметр не переносится`)
+      }
+
+      const apikeyQuery = { ...withParams, params: [], auth: { type: 'apikey', key: 'api_key', value: 'k-1', placement: 'query' } }
+      const apikeyHeader = { ...withParams, params: [], auth: { type: 'apikey', key: 'X-Api-Key', value: 'k-1', placement: 'header' } }
+      for (const lang of LANGS) {
+        const query = snippet(apikeyQuery, lang)
+        assert.ok(query.includes(`'https://api.example.com/users?api_key=k-1'`), `${lang}: apikey в query`)
+        assert.ok(!query.includes(`'api_key':`), `${lang}: apikey в query не дублируется заголовком`)
+        assert.ok(snippet(apikeyHeader, lang).includes(`'X-Api-Key': 'k-1'`), `${lang}: apikey заголовком`)
+        const bearer = snippet({ ...withParams, auth: { type: 'bearer', token: 't-1' } }, lang)
+        assert.ok(bearer.includes(`'Authorization': 'Bearer t-1'`), `${lang}: bearer`)
+        assert.equal(bearer.split('Authorization').length - 1, 1, `${lang}: bearer без дубликата Authorization`)
+      }
+    })
+
+    await check('generateSnippet: авто и пользовательский Content-Type, выключенные строки, GET/HEAD без тела, неизвестный язык', () => {
+      const json = { method: 'POST', url: 'https://x.test', params: [], headers: [], body: { type: 'json', json: '{"a":1}' }, auth: { type: 'none' } }
+      for (const lang of LANGS) {
+        const text = snippet(json, lang)
+        assert.equal(text.split('Content-Type').length - 1, 1, `${lang}: ровно один Content-Type`)
+        assert.ok(text.includes(`'Content-Type': 'application/json'`), `${lang}: авто Content-Type для json`)
+        for (const verb of ['GET', 'HEAD']) {
+          const bodyless = snippet({ ...json, method: verb }, lang)
+          assert.ok(!bodyless.includes('Content-Type'), `${lang}: ${verb} без авто Content-Type`)
+          assert.ok(!bodyless.includes('{"a":1}'), `${lang}: ${verb} без тела`)
+        }
+      }
+
+      const custom = snippet(
+        { ...json, headers: [{ id: 'h1', key: 'Content-Type', value: 'application/vnd.api+json', enabled: true }] },
+        'fetch'
+      )
+      assert.ok(custom.includes(`'Content-Type': 'application/vnd.api+json'`))
+      assert.ok(!custom.includes('application/json'), 'пользовательский Content-Type не дублируется автоматическим')
+
+      const noisy = snippet({ ...json, headers: [
+        { id: 'h1', key: 'X-Skip', value: 'no', enabled: false },
+        { id: 'h2', key: '', value: 'no-name', enabled: true },
+        { id: 'h3', key: 'X-Keep', value: 'yes', enabled: true }
+      ] }, 'fetch')
+      assert.ok(noisy.includes(`'X-Keep': 'yes'`))
+      assert.ok(!noisy.includes('X-Skip') && !noisy.includes('no-name'), 'выключенный заголовок и строка без имени не переносятся')
+
+      assert.throws(() => snippet(json, 'go'), /Неизвестный язык сниппета: go/)
+      assert.deepEqual(snippets.SNIPPET_LANGS.map((lang) => lang.value), LANGS)
+    })
+
+    await check('generateSnippet: экранирование литералов — JS и Python разворачиваются в исходный текст', async () => {
+      // Fetch исполняется с подменённым fetch: снимок синтаксиса и реальных значений аргументов.
+      const runStubbed = async (code) => {
+        let captured
+        await runInNewContext(`(async () => {\n${code}\n})()`, {
+          fetch: async (url, init) => {
+            captured = { url, init }
+            return { status: 200, text: async () => 'ok' }
+          },
+          console: { log () {} }
+        })
+        return captured
+      }
+      // Axios не импортируется в smoke: строка import снимается, остальное должно парситься.
+      const parseAxios = (code) => new Function(`return (async () => {\n${code.replace(/^import .*$/m, '')}\n})`)
+
+      // В значении есть ' → литерал в двойных кавычках, ровно JSON-форма.
+      const nasty = 'it\'s "quoted" \\ ${x}\n\tконец\u0001'
+      const jsonLiteral = JSON.stringify(nasty)
+      const nastySnapshot = {
+        ...canonical,
+        headers: [{ id: 'h1', key: 'X-Note', value: nasty, enabled: true }]
+      }
+      const generated = Object.fromEntries(LANGS.map((lang) => [lang, snippet(nastySnapshot, lang)]))
+      for (const lang of LANGS) {
+        assert.ok(generated[lang].includes(jsonLiteral), `${lang}: литерал JSON-формы`)
+      }
+      parseAxios(generated.axios)
+      assert.equal((await runStubbed(generated.fetch)).init.headers['X-Note'], nasty, 'fetch: литерал разворачивается в исходный текст')
+
+      // Одинарных кавычек нет → литерал в одинарных: двойные внутри не экранируются.
+      const quoted = 'a "quoted" \\ value'
+      const singleLiteral = `'a "quoted" \\\\ value'`
+      const quotedSnapshot = { ...nastySnapshot, headers: [{ id: 'h1', key: 'X-Note', value: quoted, enabled: true }] }
+      for (const lang of LANGS) {
+        assert.ok(snippet(quotedSnapshot, lang).includes(singleLiteral), `${lang}: литерал в одинарных кавычках`)
+      }
+      const captured = await runStubbed(snippet(quotedSnapshot, 'fetch'))
+      assert.equal(captured.init.headers['X-Note'], quoted)
+      assert.equal(captured.init.body, '{"name":"Ann"}', 'тело json читается без экранированных кавычек')
+    })
+
+    await check('generateSnippet: json/text сырой строкой, urlencoded и form-data парами', () => {
+      // Тело переносится байт в байт: лишний пробел и невалидный JSON не перестраиваются.
+      for (const raw of ['{"name" :"Ann"}', '{"name":"Ann",}']) {
+        const snapshot = { ...canonical, body: { type: 'json', json: raw } }
+        assert.ok(snippet(snapshot, 'fetch').includes(`body: '${raw}'`), 'fetch: тело без изменений')
+        assert.ok(snippet(snapshot, 'axios').includes(`data: '${raw}'`), 'axios: тело без изменений')
+        assert.ok(snippet(snapshot, 'python').includes(`data='${raw}'`), 'python: тело без изменений')
+      }
+      const text = { ...canonical, url: 'https://x.test', body: { type: 'text', text: 'hello world' } }
+      assert.ok(snippet(text, 'fetch').includes(`body: 'hello world'`))
+      assert.ok(snippet(text, 'python').includes(`'Content-Type': 'text/plain'`))
+
+      const urlencoded = { method: 'POST', url: 'https://x.test/token', params: [], headers: [], auth: { type: 'none' }, body: { type: 'urlencoded', urlencoded: [
+        { id: 'u1', key: 'grant_type', value: 'client_credentials', enabled: true },
+        { id: 'u2', key: 'client_id', value: 'ab c&d', enabled: true },
+        { id: 'u3', key: 'skip', value: 'x', enabled: false }
+      ] } }
+      const urlFetch = snippet(urlencoded, 'fetch')
+      assert.ok(urlFetch.includes(`body.append('grant_type', 'client_credentials')`))
+      assert.ok(urlFetch.includes(`body.append('client_id', 'ab c&d')`), 'сырые значения: кодирует клиент при выполнении')
+      assert.ok(!urlFetch.includes('skip'))
+      assert.ok(urlFetch.includes(`'Content-Type': 'application/x-www-form-urlencoded'`))
+      assert.ok(snippet(urlencoded, 'axios').includes(`data.append('client_id', 'ab c&d')`))
+      const urlPython = snippet(urlencoded, 'python')
+      assert.ok(urlPython.includes(`data={'grant_type': 'client_credentials', 'client_id': 'ab c&d'}`))
+      assert.ok(!urlPython.includes('skip'))
+
+      const formData = { ...urlencoded, url: 'https://x.test', body: { type: 'form-data', form: [
+        { id: 'f1', key: 'field1', value: 'value1', enabled: true },
+        { id: 'f2', key: 'field2', value: 'привет', enabled: true },
+        { id: 'f3', key: 'skip', value: 'x', enabled: false }
+      ] } }
+      const formFetch = snippet(formData, 'fetch')
+      assert.ok(formFetch.includes(`body.append('field1', 'value1')`))
+      assert.ok(formFetch.includes(`body.append('field2', 'привет')`))
+      assert.ok(!formFetch.includes('skip') && !formFetch.includes('Content-Type'), 'multipart: Content-Type ставит клиент')
+      assert.ok(snippet(formData, 'axios').includes(`data.append('field2', 'привет')`) && !snippet(formData, 'axios').includes('Content-Type'))
+      const formPython = snippet(formData, 'python')
+      assert.ok(formPython.includes(`files={'field1': (None, 'value1'), 'field2': (None, 'привет')}`))
+      assert.ok(!formPython.includes('skip') && !formPython.includes('Content-Type'))
+    })
+
+    await check('generateSnippet: basic-авторизация (fetch — заголовок, axios и python — опция клиента)', () => {
+      const basic = { method: 'GET', url: 'https://x.test', params: [], headers: [], body: { type: 'none' }, auth: { type: 'basic', username: 'user', password: 'p@ss' } }
+      assert.ok(snippet(basic, 'fetch').includes(`'Authorization': 'Basic dXNlcjpwQHNz'`))
+      assert.ok(snippet(basic, 'axios').includes(`auth: { username: 'user', password: 'p@ss' }`))
+      assert.ok(snippet(basic, 'python').includes(`auth=('user', 'p@ss')`))
+
+      // Кириллический логин: base64 в UTF-8 совпадает с заголовком, который собирает main.
+      const cyrillic = { ...basic, auth: { type: 'basic', username: 'логин', password: 'пароль' } }
+      const expected = http.buildRequest(cyrillic).headers.find((h) => h.key === 'Authorization').value
+      assert.ok(expected.startsWith('Basic '))
+      assert.ok(snippet(cyrillic, 'fetch').includes(`'Authorization': '${expected}'`))
+
+      // {{var}} в учётных данных: значение заранее не посчитать — btoa при выполнении сниппета.
+      const withVars = { ...basic, auth: { type: 'basic', username: '{{user}}', password: '{{pass}}' } }
+      assert.ok(snippet(withVars, 'fetch').includes(`'Authorization': 'Basic ' + btoa('{{user}}:{{pass}}')`))
+      assert.ok(snippet(withVars, 'axios').includes(`auth: { username: '{{user}}', password: '{{pass}}' }`))
+      assert.ok(snippet(withVars, 'python').includes(`auth=('{{user}}', '{{pass}}')`))
+    })
+
+    await check('generateSnippet: золотые тексты для снимка из design D4 (fetch, axios, python)', () => {
+      assert.equal(snippet(canonical, 'fetch'), snippetText(
+        "const response = await fetch('{{baseUrl}}/users', {",
+        "  method: 'POST',",
+        '  headers: {',
+        "    'Content-Type': 'application/json',",
+        "    'Authorization': 'Bearer t-1'",
+        '  },',
+        "  body: '{\"name\":\"Ann\"}'",
+        '});',
+        '',
+        'console.log(response.status, await response.text());'
+      ))
+      assert.equal(snippet(canonical, 'axios'), snippetText(
+        "import axios from 'axios';",
+        '',
+        'const response = await axios({',
+        "  method: 'post',",
+        "  url: '{{baseUrl}}/users',",
+        '  headers: {',
+        "    'Content-Type': 'application/json',",
+        "    'Authorization': 'Bearer t-1'",
+        '  },',
+        "  data: '{\"name\":\"Ann\"}'",
+        '});',
+        '',
+        'console.log(response.status, response.data);'
+      ))
+      assert.equal(snippet(canonical, 'python'), snippetText(
+        'import requests',
+        '',
+        "url = '{{baseUrl}}/users'",
+        '',
+        'headers = {',
+        "    'Content-Type': 'application/json',",
+        "    'Authorization': 'Bearer t-1'",
+        '}',
+        '',
+        "response = requests.post(url, headers=headers, data='{\"name\":\"Ann\"}')",
+        '',
+        'print(response.status_code, response.text)'
+      ))
+
+      // Сценарий спеки «Fetch с bearer и json-телом» — критерий приёмки issue #2.
+      const specCase = snippet({ ...canonical, url: 'https://api.example.com/users' }, 'fetch')
+      for (const part of [
+        `fetch('https://api.example.com/users', {`,
+        `'Authorization': 'Bearer t-1'`,
+        `'Content-Type': 'application/json'`,
+        `body: '{"name":"Ann"}'`
+      ]) {
+        assert.ok(specCase.includes(part), part)
+      }
+
+      // Без заголовков и авторизации секция headers опускается.
+      const plain = { method: 'GET', url: 'https://x.test', params: [], headers: [], body: { type: 'none' }, auth: { type: 'none' } }
+      assert.equal(snippet(plain, 'fetch'), snippetText(
+        "const response = await fetch('https://x.test', {",
+        "  method: 'GET'",
+        '});',
+        '',
+        'console.log(response.status, await response.text());'
+      ))
+      assert.ok(!snippet(plain, 'axios').includes('headers'))
+      const plainPython = snippet(plain, 'python')
+      assert.ok(!plainPython.includes('headers') && plainPython.includes('requests.get(url)'))
+    })
+
+    await check('generateSnippet: {{var}} литерально, дубли имён заголовков схлопываются (побеждает последний)', () => {
+      // Переменные не подставляются ни в одном поле — сниппет показывает запрос, а не окружение.
+      const templated = {
+        method: 'POST',
+        url: '{{baseUrl}}/users',
+        params: [{ id: 'p1', key: 'page', value: '{{page}}', enabled: true }],
+        headers: [{ id: 'h1', key: 'X-Token', value: '{{token}}', enabled: true }],
+        body: { type: 'json', json: '{"id":"{{id}}"}' },
+        auth: { type: 'bearer', token: '{{bearer}}' }
+      }
+      for (const lang of LANGS) {
+        const text = snippet(templated, lang)
+        for (const name of ['{{baseUrl}}', '{{page}}', '{{token}}', '{{id}}', '{{bearer}}']) {
+          assert.ok(text.includes(name), `${lang}: ${name} литерально`)
+        }
+      }
+
+      // Пользовательский заголовок перекрывает авторский (имя без учёта регистра).
+      const overridden = { ...canonical, url: 'https://x.test', headers: [{ id: 'h1', key: 'authorization', value: 'Custom x', enabled: true }] }
+      for (const lang of LANGS) {
+        const text = snippet(overridden, lang)
+        assert.equal((text.match(/authorization'/gi) ?? []).length, 1, `${lang}: одно имя authorization`)
+        assert.ok(text.includes(`'authorization': 'Custom x'`), `${lang}: побеждает пользовательский`)
+        assert.ok(!text.includes('Bearer t-1'))
+      }
+      const twins = { ...canonical, url: 'https://x.test', auth: { type: 'none' }, headers: [
+        { id: 'h1', key: 'X-A', value: '1', enabled: true },
+        { id: 'h2', key: 'x-a', value: '2', enabled: true }
+      ] }
+      assert.ok(snippet(twins, 'fetch').includes(`'x-a': '2'`) && !snippet(twins, 'fetch').includes(`'X-A': '1'`))
+      assert.ok(snippet(twins, 'python').includes(`'x-a': '2'`) && !snippet(twins, 'python').includes(`'X-A': '1'`))
+    })
+
+    // Fetch-сниппет исполняется как ES-модуль из data:-URL (top-level await). Статус и тело
+    // ответа сниппет печатает — вывод перехватываем, чтобы сравнить echo с отправкой sendRequest.
+    const runFetchSnippet = async (code) => {
+      const printed = []
+      const originalLog = console.log
+      console.log = (...args) => printed.push(args)
+      try {
+        await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
+      } finally {
+        console.log = originalLog
+      }
+      assert.equal(printed.length, 1, 'сниппет один раз выводит статус и тело ответа')
+      const [status, text] = printed[0]
+      return { status, echo: JSON.parse(text) }
+    }
+    const appEcho = async (snapshot, id) => JSON.parse((await http.sendRequest(snapshot, id)).body)
+    // Тело здесь не сравнивается: у urlencoded и multipart на проводе оно кодируется клиентом
+    // (пробел → +, свой boundary) — пары и поля сверяются отдельно. Заголовки из skipHeaders
+    // исключаются: их тоже добавляет клиент (content-type multipart, content-length).
+    const requestLine = (echo, ...skipHeaders) => {
+      const headers = { ...echo.headers }
+      for (const name of skipHeaders) delete headers[name]
+      return { method: echo.method, url: echo.url, headers }
+    }
+
+    await check('fetch-сниппет отправляет тот же запрос, что sendRequest (json, text, basic, urlencoded, form-data)', async () => {
+      const solid = [
+        ['json', { method: 'POST', url: `${base}/users`, params: [{ id: 'p1', key: 'page', value: '2', enabled: true }], headers: [{ id: 'h1', key: 'X-Trace', value: 'abc', enabled: true }], body: { type: 'json', json: '{"name":"Ann"}' }, auth: { type: 'bearer', token: 't-1' } }],
+        ['text', { method: 'PUT', url: `${base}/notes`, params: [], headers: [], body: { type: 'text', text: 'hello world' }, auth: { type: 'none' } }],
+        ['basic', { method: 'POST', url: `${base}/login`, params: [], headers: [], body: { type: 'json', json: '{}' }, auth: { type: 'basic', username: 'логин', password: 'пароль' } }]
+      ]
+      for (const [name, snapshot] of solid) {
+        const { status, echo } = await runFetchSnippet(snippet(snapshot, 'fetch'))
+        assert.equal(status, 201, `${name}: сниппет вывел статус ответа`)
+        assert.deepEqual(echo, await appEcho(snapshot, `smoke-snippet-${name}`), `${name}: метод, URL, заголовки и тело совпадают с отправкой приложения`)
+      }
+
+      // urlencoded: кодировка на проводе своя (пробел → +), декодированные пары те же.
+      const urlencoded = { method: 'POST', url: `${base}/token`, params: [], headers: [], auth: { type: 'none' }, body: { type: 'urlencoded', urlencoded: [
+        { id: 'u1', key: 'grant_type', value: 'client_credentials', enabled: true },
+        { id: 'u2', key: 'client_id', value: 'ab c&d', enabled: true }
+      ] } }
+      const { echo: urlEcho } = await runFetchSnippet(snippet(urlencoded, 'fetch'))
+      const urlApp = await appEcho(urlencoded, 'smoke-snippet-urlencoded')
+      assert.deepEqual([...new URLSearchParams(urlEcho.body)], [...new URLSearchParams(urlApp.body)])
+      assert.deepEqual(requestLine(urlEcho, 'content-length'), requestLine(urlApp, 'content-length'))
+
+      // multipart: boundary у клиента свой — сравниваем декодированные поля.
+      const parseMultipart = ({ headers, body }) => {
+        const boundary = /boundary=([^;]+)/.exec(headers['content-type'])[1]
+        return body
+          .split(`--${boundary}`)
+          .slice(1, -1)
+          .map((part) => {
+            const [head, ...rest] = part.trim().split('\r\n\r\n')
+            return [/name="([^"]*)"/.exec(head)[1], rest.join('\r\n\r\n')]
+          })
+      }
+      const formData = { method: 'POST', url: `${base}/upload`, params: [], headers: [], auth: { type: 'none' }, body: { type: 'form-data', form: [
+        { id: 'f1', key: 'field1', value: 'value1', enabled: true },
+        { id: 'f2', key: 'field2', value: 'привет мир', enabled: true },
+        { id: 'f3', key: 'skip', value: 'x', enabled: false }
+      ] } }
+      const { echo: formEcho } = await runFetchSnippet(snippet(formData, 'fetch'))
+      const formApp = await appEcho(formData, 'smoke-snippet-form-data')
+      assert.ok(formEcho.headers['content-type'].startsWith('multipart/form-data; boundary='), 'Content-Type с boundary поставил клиент')
+      assert.deepEqual(parseMultipart(formEcho), [['field1', 'value1'], ['field2', 'привет мир']])
+      assert.deepEqual(parseMultipart(formEcho), parseMultipart(formApp))
+      assert.deepEqual(requestLine(formEcho, 'content-type', 'content-length'), requestLine(formApp, 'content-type', 'content-length'))
+    })
+
+    await check('axios-сниппет синтаксически корректен (import + async-стрелка парсятся)', () => {
+      const cases = [
+        canonical,
+        { method: 'POST', url: 'https://x.test', params: [], headers: [], body: { type: 'urlencoded', urlencoded: [{ id: 'u1', key: 'a', value: 'b c', enabled: true }] }, auth: { type: 'none' } },
+        { method: 'POST', url: 'https://x.test', params: [], headers: [], body: { type: 'form-data', form: [{ id: 'f1', key: 'a', value: 'b', enabled: true }] }, auth: { type: 'none' } },
+        { method: 'GET', url: 'https://x.test', params: [], headers: [], body: { type: 'none' }, auth: { type: 'basic', username: 'u', password: 'p' } },
+        { ...canonical, headers: [{ id: 'h1', key: 'X-Note', value: 'it\'s "quoted" \\ ${x}\n', enabled: true }] }
+      ]
+      for (const snapshot of cases) {
+        const code = snippet(snapshot, 'axios')
+        assert.ok(code.startsWith("import axios from 'axios';\n"), 'сниппет начинается с подключения клиента')
+        assert.doesNotThrow(() => new Function(`return (async () => {\n${code.replace(/^import .*$/m, '')}\n})`))
+      }
     })
   } finally {
     await closeServer()
@@ -1448,6 +1900,38 @@ try {
         assert.equal(fail.error.code, 'NETWORK')
       })
 
+      await check('send_request пишет историю запроса; ошибка и send_adhoc историю не меняют', async () => {
+        const project = (await storage.listProjects())[0]
+        let out = await mcpTool('create_request', {
+          projectId: project.id,
+          request: { name: 'EchoHist', method: 'GET', url: '{{baseUrl}}/hist' }
+        })
+        const requestId = out.data.find((r) => r.name === 'EchoHist').id
+        // Пять параллельных отправок одного запроса: очередь хранилища не ломает файл истории.
+        const sent = await Promise.all(
+          Array.from({ length: 5 }, () => mcpTool('send_request', { projectId: project.id, requestId }))
+        )
+        assert.ok(sent.every((r) => r.ok === true))
+        const entries = await storage.listResponseHistory(project.id, requestId)
+        assert.equal(entries.length, 5, 'все отправки в истории, файл валиден')
+        assert.equal(entries[0].response.status, 200)
+
+        // Ошибка отправки сохранённого запроса историю не пополняет.
+        out = await mcpTool('create_request', {
+          projectId: project.id,
+          request: { name: 'EchoFail', method: 'GET', url: 'http://127.0.0.1:1/nope' }
+        })
+        const failId = out.data.find((r) => r.name === 'EchoFail').id
+        const failed = await mcpTool('send_request', { projectId: project.id, requestId: failId })
+        assert.equal(failed.ok, false)
+        assert.deepEqual(await storage.listResponseHistory(project.id, failId), [])
+
+        // Произвольный запрос агента историю не пишет вовсе: файлов в каталоге проекта — два.
+        await mcpTool('send_adhoc', { method: 'GET', url: `${echoBase}/hist` })
+        const projectFiles = await readdir(join(mcpRoot, 'history', project.id))
+        assert.equal(projectFiles.length, 2, 'только EchoHist и EchoFail; send_adhoc файл не создал')
+      })
+
       await check('curl-инструменты: экспорт и импорт без записи на диск', async () => {
         const project = (await storage.listProjects())[0]
         let out = await mcpTool('create_request', {
@@ -1490,6 +1974,439 @@ try {
   } finally {
     await mcp.stopMcpServer()
     await rm(mcpRoot, { recursive: true, force: true })
+  }
+
+  // --- Мок-сервер: хранилище мок-проектов (секция в src/main/storage.js) ---
+
+  const mockRoot = await mkdtemp(join(tmpdir(), 'postman-lite-smoke-mock-'))
+  storage.initStorage(mockRoot)
+  await storage.bootstrap()
+
+  await check('createMockProject создаёт мок-проект и файл с пустыми маршрутами', async () => {
+    const project = await storage.createMockProject('Demo')
+    assert.equal(project.name, 'Demo')
+    assert.ok(project.id)
+    const file = JSON.parse(await readFile(join(mockRoot, 'mock-projects', `${project.id}.json`), 'utf8'))
+    assert.deepEqual(file, { routes: [], defaultResponse: null })
+    const index = JSON.parse(await readFile(join(mockRoot, 'mock-projects.json'), 'utf8'))
+    assert.equal(index.length, 1)
+  })
+
+  await check('createMockProject отклоняет пустое имя', async () => {
+    await assert.rejects(() => storage.createMockProject('   '), /пустым/)
+  })
+
+  await check('renameMockProject отклоняет пустое имя и неизвестный id', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await assert.rejects(() => storage.renameMockProject(project.id, '  '), /пустым/)
+    await assert.rejects(() => storage.renameMockProject('nope', 'X'), /не найден/)
+  })
+
+  await check('saveMockProjectConfig нормализует маршруты и пишет на диск', async () => {
+    const project = (await storage.listMockProjects())[0]
+    const stored = await storage.saveMockProjectConfig(project.id, {
+      routes: [
+        { id: 'r1', method: 'get', path: '/api/users', status: 200, headers: [{ id: 'h1', key: 'X-K', value: 'v' }], body: '{"ok":1}', delayMs: 0 },
+        { method: null, path: '/any' }
+      ],
+      defaultResponse: { status: 404, body: null }
+    })
+    assert.equal(stored.routes[0].method, 'GET')
+    assert.equal(stored.routes[0].headers[0].enabled, true)
+    assert.equal(stored.routes[1].status, 200, 'статус по умолчанию 200')
+    assert.equal(stored.routes[1].method, null)
+    assert.equal(stored.routes[1].body, null)
+    assert.deepEqual(stored.defaultResponse, { status: 404, body: null })
+    const file = JSON.parse(await readFile(join(mockRoot, 'mock-projects', `${project.id}.json`), 'utf8'))
+    assert.equal(file.routes.length, 2)
+  })
+
+  await check('saveMockProjectConfig отклоняет пустой путь и невалидный статус', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await assert.rejects(() => storage.saveMockProjectConfig(project.id, { routes: [{ path: '   ' }] }), /маршрута не может быть пустым/)
+    await assert.rejects(() => storage.saveMockProjectConfig(project.id, { routes: [{ path: '/x', status: 99 }] }), /100–599/)
+    await assert.rejects(() => storage.saveMockProjectConfig(project.id, { routes: [{ path: '/x', delayMs: -5 }] }), /неотриц/)
+    await assert.rejects(() => storage.saveMockProjectConfig('nope', { routes: [] }), /не найден/)
+  })
+
+  await check('renameMockProject сохраняет маршруты', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await storage.renameMockProject(project.id, 'Переименованный')
+    const list = await storage.listMockProjects()
+    assert.equal(list[0].name, 'Переименованный')
+    const config = await storage.getMockProject(project.id)
+    assert.equal(config.routes.length, 2)
+  })
+
+  await check('getMockProject неизвестного id возвращает null', async () => {
+    assert.equal(await storage.getMockProject('nope'), null)
+  })
+
+  await check('deleteMockProject удаляет запись индекса и файл', async () => {
+    const project = (await storage.listMockProjects())[0]
+    await storage.deleteMockProject(project.id)
+    assert.deepEqual(await storage.listMockProjects(), [])
+    await assert.rejects(() => readFile(join(mockRoot, 'mock-projects', `${project.id}.json`), 'utf8'), /ENOENT/)
+  })
+
+  // --- Мок-сервер: жизненный цикл, обработка запросов, журнал (src/main/mock.js) ---
+
+  const mockPort = await takeFreePort()
+  const mockProject = await storage.createMockProject('Server')
+  const mockProject2 = await storage.createMockProject('Server 2')
+
+  const mockFetch = (path, init) => fetch(`http://127.0.0.1:${mockPort}${path}`, init)
+  let mockPort2 = null
+
+  try {
+    await check('старт на неизвестном мок-проекте — ошибка', async () => {
+      await assert.rejects(() => mock.startMockServer({ projectId: 'nope', port: mockPort }), /не найден/)
+    })
+
+    await check('запуск сервера: статус running с адресом на 127.0.0.1', async () => {
+      await storage.saveMockProjectConfig(mockProject.id, {
+        routes: [
+          { method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' },
+          { method: null, path: '/any', status: 204 }
+        ],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+      const status = await mock.startMockServer({ projectId: mockProject.id, port: mockPort })
+      assert.equal(status.state, 'running')
+      assert.equal(status.address, `http://127.0.0.1:${mockPort}`)
+      assert.equal(status.projectId, mockProject.id)
+    })
+
+    await check('лог пуст до первого запроса', async () => {
+      assert.deepEqual(mock.getMockLog(), [])
+    })
+
+    await check('ответ по маршруту: статус, тело, content-type по умолчанию', async () => {
+      const res = await mockFetch('/api/users')
+      assert.equal(res.status, 200)
+      assert.match(res.headers.get('content-type'), /application\/json/)
+      assert.deepEqual(await res.json(), { users: [1] })
+    })
+
+    await check('query-строка не влияет на матчинг', async () => {
+      const res = await mockFetch('/api/users?x=1&y=2')
+      assert.equal(res.status, 200)
+      assert.deepEqual(await res.json(), { users: [1] })
+    })
+
+    await check('маршрут без метода отвечает на любой метод', async () => {
+      const res = await mockFetch('/any', { method: 'POST', headers: { 'X-Custom': 'abc' }, body: '{"a":1}' })
+      assert.equal(res.status, 204)
+    })
+
+    await check('неотматченный запрос — ответ по умолчанию', async () => {
+      const res = await mockFetch('/missing')
+      assert.equal(res.status, 418)
+      assert.deepEqual(await res.json(), { teapot: true })
+    })
+
+    await check('заголовки маршрута попадают в ответ и перекрывают content-type', async () => {
+      await mock.applyMockConfig({
+        routes: [{ method: 'GET', path: '/plain', status: 200, headers: [{ key: 'Content-Type', value: 'text/plain' }, { key: 'X-Request-Id', value: 'mock-1' }], body: 'привет' }],
+        defaultResponse: { status: 404, body: null }
+      })
+      const res = await mockFetch('/plain')
+      assert.equal(res.headers.get('content-type'), 'text/plain')
+      assert.equal(res.headers.get('x-request-id'), 'mock-1')
+      assert.equal(await res.text(), 'привет')
+      // возвращаем исходную конфигурацию для следующих проверок
+      await mock.applyMockConfig({
+        routes: [
+          { method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' },
+          { method: null, path: '/any', status: 204 }
+        ],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+    })
+
+    await check('applyMockConfig меняет ответ без рестарта сервера', async () => {
+      await mock.applyMockConfig({
+        routes: [{ method: 'GET', path: '/api/users', status: 200, body: '{"v":2}' }],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+      const res = await mockFetch('/api/users')
+      assert.deepEqual(await res.json(), { v: 2 })
+      const status = await mock.applyMockConfig({ routes: [{ method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' }], defaultResponse: { status: 418, body: '{"teapot":true}' } })
+      assert.equal(status.state, 'running')
+    })
+
+    await check('задержка маршрута откладывает ответ', async () => {
+      await mock.applyMockConfig({
+        routes: [{ method: 'GET', path: '/slow', status: 200, body: '{"ok":1}', delayMs: 700 }],
+        defaultResponse: null
+      })
+      const started = Date.now()
+      const res = await mockFetch('/slow')
+      assert.ok(Date.now() - started >= 650, 'ответ пришёл раньше задержки')
+      assert.deepEqual(await res.json(), { ok: 1 })
+      await mock.applyMockConfig({
+        routes: [
+          { method: 'GET', path: '/api/users', status: 200, body: '{"users":[1]}' },
+          { method: null, path: '/any', status: 204 }
+        ],
+        defaultResponse: { status: 418, body: '{"teapot":true}' }
+      })
+    })
+
+    await check('журнал: тело распарсено, заголовки сохранены, метод и путь на месте', async () => {
+      const res = await mockFetch('/any?x=1', { method: 'POST', headers: { 'X-Custom': 'abc', 'content-type': 'application/json' }, body: '{"name":"Тест"}' })
+      assert.equal(res.status, 204)
+      const log = mock.getMockLog()
+      assert.equal(log.length, 8)
+      const last = log[log.length - 1]
+      assert.equal(last.method, 'POST')
+      assert.equal(last.url, '/any?x=1')
+      assert.equal(last.headers['x-custom'], 'abc')
+      assert.deepEqual(last.body, { name: 'Тест' })
+      assert.ok(last.ts)
+    })
+
+    await check('журнал: тело без JSON хранится сырой строкой', async () => {
+      await mockFetch('/api/users', { method: 'POST', body: 'plain text' })
+      const last = mock.getMockLog().at(-1)
+      assert.equal(last.body, 'plain text')
+    })
+
+    await check('занятый порт — статус error с сообщением, сервер не запущен', async () => {
+      const blocker = createServer()
+      await new Promise((resolve) => blocker.listen(0, '127.0.0.1', resolve))
+      const busyPort = blocker.address().port
+      const status = await mock.startMockServer({ projectId: mockProject2.id, port: busyPort })
+      assert.equal(status.state, 'error')
+      assert.match(status.message, /занят/)
+      blocker.closeAllConnections()
+      await new Promise((resolve) => blocker.close(resolve))
+      // Попытка занятого порта остановила предыдущий слушатель — поднимаем снова для следующих проверок.
+      const restored = await mock.startMockServer({ projectId: mockProject.id, port: mockPort })
+      assert.equal(restored.state, 'running')
+    })
+
+    await check('некорректный порт отклоняется валидацией', async () => {
+      await assert.rejects(() => mock.startMockServer({ projectId: mockProject2.id, port: 80 }), /1024–65535/)
+    })
+
+    await check('журнал: лимит буфера вытесняет самые старые записи', async () => {
+      mock.clearMockLog()
+      // Последовательно: сотни параллельных fetch у undici рвутся с ECONNRESET (ограничение клиента, не сервера).
+      for (let i = 0; i < 505; i += 1) await mockFetch(`/api/users?bulk=${i}`)
+      const log = mock.getMockLog()
+      assert.equal(log.length, 500)
+      assert.equal(log[0].url, '/api/users?bulk=5', 'старейшие записи вытеснены')
+      assert.equal(log[log.length - 1].url, '/api/users?bulk=504')
+      assert.ok(!log.some((e) => e.url === '/api/users?bulk=0'))
+    })
+
+    await check('clear обнуляет журнал', async () => {
+      assert.equal(mock.clearMockLog(), true)
+      assert.deepEqual(mock.getMockLog(), [])
+      await mockFetch('/api/users')
+      assert.equal(mock.getMockLog().length, 1)
+    })
+
+    await check('setLogListener получает каждую новую запись', async () => {
+      const seen = []
+      mock.setLogListener((entry) => seen.push(entry))
+      await mockFetch('/api/users')
+      assert.equal(seen.length, 1)
+      assert.equal(seen[0].url, '/api/users')
+      mock.setLogListener(null)
+      await mockFetch('/api/users')
+      assert.equal(seen.length, 1)
+    })
+
+    await check('переключение мок-проекта останавливает старый и стартует новый', async () => {
+      await storage.saveMockProjectConfig(mockProject2.id, { routes: [{ method: 'GET', path: '/second', status: 201, body: '{"n":2}' }], defaultResponse: null })
+      const newPort = await takeFreePort()
+      const status = await mock.startMockServer({ projectId: mockProject2.id, port: newPort })
+      assert.equal(status.state, 'running')
+      assert.equal(status.port, newPort)
+      assert.equal(status.projectId, mockProject2.id)
+      const old = await mockFetch('/api/users').catch(() => null)
+      assert.equal(old, null, 'старый порт закрыт')
+      const res = await fetch(`http://127.0.0.1:${newPort}/second`)
+      assert.equal(res.status, 201)
+      mockPort2 = newPort
+    })
+
+    await check('остановка: статус stopped, порт закрыт', async () => {
+      const status = await mock.stopMockServer()
+      assert.equal(status.state, 'stopped')
+      const res = await fetch(`http://127.0.0.1:${mockPort2}/second`).catch(() => null)
+      assert.equal(res, null)
+    })
+  } finally {
+    await mock.stopMockServer()
+    await rm(mockRoot, { recursive: true, force: true })
+  }
+
+  // --- История ответов (секция в src/main/storage.js) ---
+  // Отдельный корень хранилища: не зависит от состояния основного (там после
+  // CORRUPT-теста projects.json оставлен битым намеренно).
+
+  const histRoot = await mkdtemp(join(tmpdir(), 'postman-lite-smoke-hist-'))
+  storage.initStorage(histRoot)
+
+  try {
+    const histProject = await storage.createProject('Hist')
+    const P = histProject.id
+    const REQ = 'req-1'
+    await storage.saveRequest(P, { id: REQ, name: 'Req', method: 'GET', url: 'http://127.0.0.1/x', headers: [], params: [] })
+    const makeResponse = (body, status = 200) => ({
+      status,
+      statusText: 'OK',
+      timeMs: 12,
+      size: Buffer.byteLength(String(body)),
+      headers: [{ key: 'Content-Type', value: 'application/json' }],
+      body: String(body),
+      truncated: false
+    })
+
+    await check('append→list: новая запись первая, поля ответа сохранены', async () => {
+      await storage.appendResponseHistory(P, REQ, makeResponse('{"a":1}'))
+      await storage.appendResponseHistory(P, REQ, makeResponse('{"a":2}'))
+      const entries = await storage.listResponseHistory(P, REQ)
+      assert.equal(entries.length, 2)
+      assert.equal(entries[0].response.body, '{"a":2}', 'новая запись первая')
+      assert.equal(entries[1].response.body, '{"a":1}')
+      assert.ok(entries[0].createdAt, 'время получения в записи')
+      assert.equal(entries[0].response.status, 200)
+      assert.equal(entries[0].response.timeMs, 12)
+    })
+
+    await check('persist: история читается после переинициализации на той же папке', async () => {
+      storage.initStorage(histRoot)
+      const entries = await storage.listResponseHistory(P, REQ)
+      assert.equal(entries.length, 2)
+    })
+
+    await check('лимит глубины: 11-я запись вытесняет старейшую', async () => {
+      for (let i = 0; i < 11; i += 1) await storage.appendResponseHistory(P, 'req-limit', makeResponse(`{"n":${i}}`))
+      const entries = await storage.listResponseHistory(P, 'req-limit')
+      assert.equal(entries.length, 10)
+      assert.equal(entries[0].response.body, '{"n":10}')
+      assert.equal(entries[9].response.body, '{"n":1}', 'старейшая {"n":0} вытеснена')
+    })
+
+    await check('урезание тела: >100 КБ → bodyCut, исходный size сохранён', async () => {
+      const big = 'x'.repeat(150 * 1024)
+      await storage.appendResponseHistory(P, 'req-big', makeResponse(big))
+      const [entry] = await storage.listResponseHistory(P, 'req-big')
+      assert.equal(entry.response.body.length, 100 * 1024)
+      assert.equal(entry.response.bodyCut, true)
+      assert.equal(entry.response.size, 150 * 1024, 'исходный размер тела в size')
+    })
+
+    await check('бинарный content-type: тело не сохраняется, метаданные остаются', async () => {
+      await storage.appendResponseHistory(P, 'req-bin', {
+        ...makeResponse('raw-bytes'),
+        headers: [{ key: 'Content-Type', value: 'application/octet-stream' }]
+      })
+      const [entry] = await storage.listResponseHistory(P, 'req-bin')
+      assert.equal(entry.response.binary, true)
+      assert.equal(entry.response.body, null)
+      assert.equal(entry.response.size, Buffer.byteLength('raw-bytes'))
+    })
+
+    await check('текстовые content-type сохраняют тело (json, text/plain, без заголовка)', async () => {
+      await storage.appendResponseHistory(P, 'req-plain', {
+        ...makeResponse('привет'),
+        headers: [{ key: 'Content-Type', value: 'text/plain; charset=utf-8' }]
+      })
+      const [plain] = await storage.listResponseHistory(P, 'req-plain')
+      assert.equal(plain.response.body, 'привет')
+      assert.equal(plain.response.binary, undefined)
+
+      await storage.appendResponseHistory(P, 'req-noct', { ...makeResponse('нет заголовка'), headers: [] })
+      const [noct] = await storage.listResponseHistory(P, 'req-noct')
+      assert.equal(noct.response.body, 'нет заголовка')
+      assert.equal(noct.response.binary, undefined)
+    })
+
+    await check('неизвестный проект отклоняется в append и list', async () => {
+      await assert.rejects(() => storage.appendResponseHistory('nope', 'r', makeResponse('{}')), /Проект не найден/)
+      await assert.rejects(() => storage.listResponseHistory('nope', 'r'), /Проект не найден/)
+    })
+
+    await check('повреждённый файл истории: append пропускается, list бросает CORRUPT_STORAGE', async () => {
+      await storage.appendResponseHistory(P, 'req-corrupt', makeResponse('{}')) // создаёт валидный файл
+      const file = join(histRoot, 'history', P, 'req-corrupt.json')
+      await writeFile(file, '{ битый', 'utf8')
+      await storage.appendResponseHistory(P, 'req-corrupt', makeResponse('{"new":1}')) // не бросает, не пишет
+      const after = await readFile(file, 'utf8')
+      assert.equal(after, '{ битый', 'повреждённый файл не перезаписан')
+      await assert.rejects(
+        () => storage.listResponseHistory(P, 'req-corrupt'),
+        (err) => err.code === 'CORRUPT_STORAGE'
+      )
+    })
+
+    await check('параллельные append в одну историю: все записи учтены, tmp-остатков нет', async () => {
+      // 30 append по 5 параллельно: очередь сериализует read-modify-write,
+      // каждая запись видит результат предыдущей; в файле остаются последние 10.
+      for (let round = 0; round < 6; round += 1) {
+        await Promise.all(
+          Array.from({ length: 5 }, (_, k) =>
+            storage.appendResponseHistory(P, 'req-race', makeResponse(`{"r${round}-${k}"}`))
+          )
+        )
+      }
+      const entries = await storage.listResponseHistory(P, 'req-race')
+      assert.equal(entries.length, 10)
+      assert.ok(entries.every((e) => /^\{"r\d+-\d+"\}$/.test(e.response.body)), 'все тела из отправленных')
+      const leftovers = (await readdir(join(histRoot, 'history', P))).filter((f) => f.includes('.tmp'))
+      assert.equal(leftovers.length, 0, 'временных файлов не осталось')
+    })
+
+    await check('параллельные мутации файла проекта не теряют обновления', async () => {
+      const ids = ['p1', 'p2', 'p3']
+      for (let round = 0; round < 8; round += 1) {
+        await Promise.all(
+          ids.map((id) =>
+            storage.saveRequest(P, { id, name: `${id}-${round}`, method: 'GET', url: 'http://x', headers: [], params: [] })
+          )
+        )
+      }
+      const requests = await storage.listRequests(P)
+      for (const id of ids) {
+        const record = requests.find((r) => r.id === id)
+        assert.equal(record.name, `${id}-7`, 'последняя мутация каждого запроса в файле')
+      }
+    })
+
+    await check('заблокированный запрос пишет историю', async () => {
+      await storage.setRequestLocked(P, REQ, true)
+      await storage.appendResponseHistory(P, REQ, makeResponse('{"locked":true}'))
+      const entries = await storage.listResponseHistory(P, REQ)
+      assert.equal(entries[0].response.body, '{"locked":true}')
+      await storage.setRequestLocked(P, REQ, false)
+    })
+
+    await check('переименование проекта историю не трогает', async () => {
+      const before = await storage.listResponseHistory(P, REQ)
+      await storage.renameProject(P, 'Hist-renamed')
+      const after = await storage.listResponseHistory(P, REQ)
+      assert.deepEqual(after, before)
+    })
+
+    await check('удаление запроса удаляет файл истории; удаление проекта — каталог', async () => {
+      const P2 = (await storage.createProject('Hist2')).id
+      await storage.appendResponseHistory(P2, 'r1', makeResponse('{}'))
+      const dir2 = join(histRoot, 'history', P2)
+      await storage.deleteProject(P2)
+      await assert.rejects(() => readdir(dir2), (err) => err.code === 'ENOENT', 'каталог истории проекта удалён')
+
+      await storage.deleteRequest(P, REQ)
+      const leftFiles = await readdir(join(histRoot, 'history', P))
+      assert.equal(leftFiles.includes(`${REQ}.json`), false, 'файл истории запроса удалён')
+      assert.deepEqual(await storage.listResponseHistory(P, REQ), [])
+    })
+  } finally {
+    await rm(histRoot, { recursive: true, force: true })
   }
 
   console.log(`\nSMOKE OK: ${passed} проверок пройдено`)
