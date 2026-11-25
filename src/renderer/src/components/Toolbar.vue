@@ -7,6 +7,7 @@ import { parseOpenApi } from '../lib/openapi.js'
 import EnvironmentsDialog from './EnvironmentsDialog.vue'
 import ProxyModal from './ProxyModal.vue'
 import RunnerModal from './RunnerModal.vue'
+import Icon from './Icon.vue'
 
 const ui = useUiStore()
 const projects = useProjectsStore()
@@ -89,7 +90,7 @@ async function importOpenApi() {
         aria-label="Управление окружениями"
         @click="manageVisible = true"
       >
-        ⚙
+        <Icon name="settings" />
       </button>
     </div>
     <div class="toolbar-right">
@@ -123,7 +124,7 @@ async function importOpenApi() {
         aria-label="Переключить тему"
         @click="ui.toggleTheme()"
       >
-        {{ ui.theme === 'dark' ? '☀' : '☾' }}
+        <Icon :name="ui.theme === 'dark' ? 'sun' : 'moon'" />
       </button>
     </div>
   </header>

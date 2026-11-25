@@ -26,6 +26,23 @@ const dialog = ref(null)
 const curlImportVisible = ref(false)
 const aboutVisible = ref(false)
 const settingsVisible = ref(false)
+const sidebarWidth = ref(Number(localStorage.getItem('request_lite_sidebar_width')) || 260)
+
+function startResize(event) {
+  const startX = event.clientX
+  const startWidth = sidebarWidth.value
+  const onMove = (e) => {
+    const next = Math.min(460, Math.max(200, startWidth + (e.clientX - startX)))
+    sidebarWidth.value = next
+  }
+  const onUp = () => {
+    localStorage.setItem('request_lite_sidebar_width', String(sidebarWidth.value))
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+}
 
 // Импорт коллекции Postman: file picker → парсинг → bulk-импорт в новый проект.
 async function importPostman() {
@@ -97,8 +114,9 @@ async function newMockProject() {
 <template>
   <div class="app">
     <Toolbar />
-    <div class="app-main">
+    <div class="app-main" :style="{ '--sidebar-width': `${sidebarWidth}px` }">
       <Sidebar @new-project="newProject" @new-mock-project="newMockProject" />
+      <div class="sidebar-resizer" title="Изменить ширину сайдбара" @pointerdown="startResize" />
       <main class="editor-area">
         <template v-if="ui.view === 'requests'">
           <RequestTabs />
