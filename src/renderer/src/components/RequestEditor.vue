@@ -110,11 +110,12 @@ function cancel() {
         v-if="!tabs.activeTab.sending"
         class="btn btn-primary send-btn"
         :disabled="!canSend"
+        aria-label="Отправить запрос"
         @click="send"
       >
         Send
       </button>
-      <button v-else class="btn btn-danger send-btn" @click="cancel">Cancel</button>
+      <button v-else class="btn btn-danger send-btn" aria-label="Отменить отправку" @click="cancel">Cancel</button>
     </div>
 
     <div class="request-tabs-row">

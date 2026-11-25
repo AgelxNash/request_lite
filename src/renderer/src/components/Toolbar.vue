@@ -4,6 +4,7 @@ import { useEnvironmentsStore } from '../stores/environments.js'
 import { useProjectsStore } from '../stores/projects.js'
 import { useUiStore } from '../stores/ui.js'
 import EnvironmentsDialog from './EnvironmentsDialog.vue'
+import Icon from './Icon.vue'
 
 const ui = useUiStore()
 const projects = useProjectsStore()
@@ -63,7 +64,7 @@ function select(event) {
         aria-label="Управление окружениями"
         @click="manageVisible = true"
       >
-        ⚙
+        <Icon name="settings" />
       </button>
     </div>
     <div class="toolbar-right">
@@ -73,7 +74,7 @@ function select(event) {
         aria-label="Переключить тему"
         @click="ui.toggleTheme()"
       >
-        {{ ui.theme === 'dark' ? '☀' : '☾' }}
+        <Icon :name="ui.theme === 'dark' ? 'sun' : 'moon'" />
       </button>
     </div>
   </header>
