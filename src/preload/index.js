@@ -96,6 +96,10 @@ const api = {
     getLog: () => ipcRenderer.invoke('proxy:getLog'),
     clearLog: () => ipcRenderer.invoke('proxy:clearLog')
   },
+  loadtest: {
+    run: (payload) => ipcRenderer.invoke('loadtest:run', payload),
+    cancel: () => ipcRenderer.invoke('loadtest:cancel')
+  },
   onMenu: (callback) => {
     ipcRenderer.on('menu:new-project', () => callback('new-project'))
     ipcRenderer.on('menu:save-request', () => callback('save-request'))

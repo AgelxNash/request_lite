@@ -8,6 +8,7 @@ import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
 import { getMcpStatus, applyMcpConfig } from './mcp.js'
 import { startProxy, stopProxy, getProxyStatus, getProxyLog, clearProxyLog } from './proxy.js'
+import { runLoadTest, cancelLoadTest } from './loadtest.js'
 import {
   getMockStatus,
   startMockServer,
@@ -180,6 +181,10 @@ export function registerIpc(getMainWindow = () => null) {
   ipcMain.handle('proxy:status', () => getProxyStatus())
   ipcMain.handle('proxy:getLog', () => getProxyLog())
   ipcMain.handle('proxy:clearLog', () => clearProxyLog())
+
+  // Нагрузочный прогон запроса: статистика латентности/RPS из main-процесса.
+  ipcMain.handle('loadtest:run', (_event, payload) => runLoadTest(payload))
+  ipcMain.handle('loadtest:cancel', () => cancelLoadTest())
 
   // Живой журнал: каждая принятая запросом запись летит в открытое окно (push mocks:log).
   setLogListener((entry) => {

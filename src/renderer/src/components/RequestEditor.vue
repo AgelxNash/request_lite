@@ -4,6 +4,7 @@ import { useProjectsStore } from '../stores/projects.js'
 import { useRequestsStore } from '../stores/requests.js'
 import { useTabsStore } from '../stores/tabs.js'
 import KeyValueTable from './KeyValueTable.vue'
+import LoadTestModal from './LoadTestModal.vue'
 
 const tabs = useTabsStore()
 const projects = useProjectsStore()
@@ -12,6 +13,7 @@ const dialog = inject('dialog')
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const requestTabs = ['Params', 'Headers', 'Body', 'Auth']
 const activeRequestTab = ref('Params')
+const loadTestVisible = ref(false)
 
 const bodyTypes = [
   { value: 'none', label: 'none' },
@@ -96,6 +98,15 @@ function cancel() {
         @input="tabs.updateActive({ url: $event.target.value })"
         @keydown.enter.prevent="send"
       />
+      <button
+        v-if="!tabs.activeTab.sending"
+        class="btn"
+        :disabled="!canSend"
+        title="Нагрузочный тест (Load Tester)"
+        @click="loadTestVisible = true"
+      >
+        Load
+      </button>
       <button
         v-if="!tabs.activeTab.sending"
         class="btn save-request-btn"
@@ -285,5 +296,6 @@ function cancel() {
         </label>
       </div>
     </div>
+    <LoadTestModal :visible="loadTestVisible" @close="loadTestVisible = false" />
   </section>
 </template>

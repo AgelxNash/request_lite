@@ -6,6 +6,7 @@ import { useUiStore } from '../stores/ui.js'
 import { parseOpenApi } from '../lib/openapi.js'
 import EnvironmentsDialog from './EnvironmentsDialog.vue'
 import ProxyModal from './ProxyModal.vue'
+import RunnerModal from './RunnerModal.vue'
 
 const ui = useUiStore()
 const projects = useProjectsStore()
@@ -13,6 +14,7 @@ const environments = useEnvironmentsStore()
 const dialog = inject('dialog')
 const manageVisible = ref(false)
 const proxyVisible = ref(false)
+const runnerVisible = ref(false)
 
 // Список и активный выбор живут по активному проекту.
 onMounted(() => environments.load(projects.activeProjectId))
@@ -108,6 +110,14 @@ async function importOpenApi() {
         + OpenAPI
       </button>
       <button
+        class="btn"
+        style="padding: 4px 10px; font-size: 12px;"
+        title="Запустить все запросы проекта (Collection Runner)"
+        @click="runnerVisible = true"
+      >
+        ▶ Run
+      </button>
+      <button
         class="btn-icon"
         :title="ui.theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'"
         aria-label="Переключить тему"
@@ -119,4 +129,5 @@ async function importOpenApi() {
   </header>
   <EnvironmentsDialog :visible="manageVisible" @close="manageVisible = false" />
   <ProxyModal :visible="proxyVisible" @close="proxyVisible = false" />
+  <RunnerModal :visible="runnerVisible" @close="runnerVisible = false" />
 </template>

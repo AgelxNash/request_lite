@@ -17,6 +17,7 @@ const curl = await import('../src/renderer/src/lib/curl.js')
 const snippets = await import('../src/renderer/src/lib/snippets.js')
 const postman = await import('../src/renderer/src/lib/postman.js')
 const openapi = await import('../src/renderer/src/lib/openapi.js')
+const loadtest = await import('../src/main/loadtest.js')
 const mcp = await import('../src/main/mcp.js')
 const mock = await import('../src/main/mock.js')
 
@@ -2471,6 +2472,32 @@ try {
   } finally {
     await rm(histRoot, { recursive: true, force: true })
   }
+
+  // --- Нагрузочный прогон (runLoadTest, main/loadtest.js) ---
+
+  await check('runLoadTest: счётчики, статусы и латентность по локальному серверу', async () => {
+    const { createServer } = await import('node:http')
+    let seen = 0
+    const srv = createServer((q, s) => { seen++; s.writeHead(seen % 4 === 0 ? 500 : 200); s.end('ok') })
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+    try {
+      const port = srv.address().port
+      const request = { method: 'GET', url: `http://127.0.0.1:${port}/x`, params: [], headers: [], body: { type: 'none' }, auth: { type: 'none' }, sslVerify: true }
+      const res = await loadtest.runLoadTest({ request, totalRequests: 12, concurrency: 3 })
+      assert.equal(res.ok, true)
+      assert.equal(res.completed, 12)
+      assert.equal(res.total, 12)
+      assert.equal(res.errors, 3, 'каждый 4-й ответ 500')
+      assert.deepEqual(res.statusCounts, { 200: 9, 500: 3 })
+      assert.ok(res.minMs > 0 || res.avgMs >= 0)
+      assert.ok(res.p95Ms >= res.minMs)
+      assert.ok(res.rps > 0)
+      // Отмена на незапущенном прогоне — безопасный no-op
+      assert.deepEqual(loadtest.cancelLoadTest(), { ok: true })
+    } finally {
+      srv.close()
+    }
+  })
 
   console.log(`\nSMOKE OK: ${passed} проверок пройдено`)
 } finally {
