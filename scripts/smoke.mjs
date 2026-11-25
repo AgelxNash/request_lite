@@ -16,6 +16,7 @@ const variables = await import('../src/renderer/src/lib/variables.js')
 const curl = await import('../src/renderer/src/lib/curl.js')
 const snippets = await import('../src/renderer/src/lib/snippets.js')
 const postman = await import('../src/renderer/src/lib/postman.js')
+const openapi = await import('../src/renderer/src/lib/openapi.js')
 const mcp = await import('../src/main/mcp.js')
 const mock = await import('../src/main/mock.js')
 
@@ -588,6 +589,68 @@ try {
       assert.throws(() => postman.parseCollection('{ это не json'), /не является корректным JSON/)
       assert.throws(() => postman.parseCollection('{"name": "не коллекция"}'), /Не похоже на коллекцию/)
       assert.throws(() => postman.parseCollection('{"info": {"name": ""}, "item": []}'), /Не похоже на коллекцию/)
+    })
+
+    // --- OpenAPI/Swagger импорт: parseOpenApi (lib/openapi.js) ---
+
+    const FIXTURE_OPENAPI = {
+      openapi: '3.0.0',
+      info: { title: 'Pets API' },
+      servers: [{ url: 'https://api.example.com/v1' }],
+      paths: {
+        '/pets': {
+          get: {
+            summary: 'Список питомцев',
+            parameters: [
+              { name: 'limit', in: 'query', schema: { type: 'integer' } },
+              { name: 'X-Trace', in: 'header', example: 't-1' }
+            ]
+          },
+          post: {
+            operationId: 'createPet',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: { type: 'object', properties: { name: { type: 'string' }, age: { type: 'integer' }, tags: { type: 'array', items: { type: 'string' } } } }
+                }
+              }
+            }
+          }
+        },
+        '/pets/{id}': {
+          delete: { summary: 'Удалить питомца' }
+        }
+      }
+    }
+
+    await check('parseOpenApi: paths → запросы, baseUrl → переменная окружения', () => {
+      const parsed = openapi.parseOpenApi(JSON.stringify(FIXTURE_OPENAPI))
+      assert.equal(parsed.name, 'Pets API')
+      assert.deepEqual(parsed.variables, [{ key: 'baseUrl', value: 'https://api.example.com/v1', enabled: true }])
+      assert.equal(parsed.requests.length, 3)
+      const [list, create, del] = parsed.requests
+      assert.equal(list.name, 'Список питомцев')
+      assert.equal(list.url, '{{baseUrl}}/pets')
+      assert.equal(list.method, 'GET')
+      assert.deepEqual(list.params, [{ key: 'limit', value: '', enabled: false }])
+      assert.deepEqual(list.headers, [{ key: 'X-Trace', value: 't-1', enabled: true }])
+      assert.equal(create.name, 'createPet')
+      assert.equal(create.body.type, 'json')
+      assert.deepEqual(JSON.parse(create.body.json), { name: '', age: 0, tags: [''] })
+      assert.equal(del.method, 'DELETE')
+      assert.equal(del.body.type, 'none')
+      // Модель хранилища: sslVerify-флаг, body — объект
+      for (const r of parsed.requests) assert.equal(r.sslVerify, true)
+    })
+
+    await check('parseOpenApi: Swagger 2.0 host+basePath и ошибки формата', () => {
+      const parsed = openapi.parseOpenApi(JSON.stringify({
+        swagger: '2.0', info: { title: 'Legacy' }, host: 'old.example.com', basePath: '/v2',
+        paths: { '/ping': { get: { summary: 'Ping' } } }
+      }))
+      assert.equal(parsed.variables[0].value, 'https://old.example.com/v2')
+      assert.throws(() => openapi.parseOpenApi('{ это не json'), /не является корректным JSON/)
+      assert.throws(() => openapi.parseOpenApi('{"info": {"title": "нет paths"}}'), /не является корректной спецификацией/)
     })
 
     // --- Postman-импорт: bulk-хранилище (importCollection) ---

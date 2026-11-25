@@ -1,14 +1,16 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { inject, onMounted, ref, watch } from 'vue'
 import { useEnvironmentsStore } from '../stores/environments.js'
 import { useProjectsStore } from '../stores/projects.js'
 import { useUiStore } from '../stores/ui.js'
+import { parseOpenApi } from '../lib/openapi.js'
 import EnvironmentsDialog from './EnvironmentsDialog.vue'
 import ProxyModal from './ProxyModal.vue'
 
 const ui = useUiStore()
 const projects = useProjectsStore()
 const environments = useEnvironmentsStore()
+const dialog = inject('dialog')
 const manageVisible = ref(false)
 const proxyVisible = ref(false)
 
@@ -21,6 +23,26 @@ watch(
 
 function select(event) {
   environments.setActive(event.target.value === '' ? null : event.target.value)
+}
+
+// Импорт OpenAPI/Swagger JSON: file picker → парсинг → bulk-импорт в новый проект.
+async function importOpenApi() {
+  const picked = await window.api.postman.pickAndRead()
+  if (!picked.ok) {
+    if (picked.error) {
+      await dialog.value.alert({ title: 'Импорт OpenAPI', message: picked.error })
+    }
+    return // отмена выбора файла — ничего не делаем
+  }
+  let parsed
+  try {
+    parsed = parseOpenApi(picked.content)
+  } catch (err) {
+    await dialog.value.alert({ title: 'Импорт OpenAPI', message: err?.message ?? 'Не удалось разобрать файл' })
+    return
+  }
+  await projects.importCollection({ name: parsed.name, requests: parsed.requests, variables: parsed.variables })
+  await environments.load(projects.activeProjectId)
 }
 </script>
 
@@ -76,6 +98,14 @@ function select(event) {
         @click="proxyVisible = true"
       >
         Proxy
+      </button>
+      <button
+        class="btn"
+        style="padding: 4px 10px; font-size: 12px;"
+        title="Импортировать OpenAPI / Swagger JSON"
+        @click="importOpenApi"
+      >
+        + OpenAPI
       </button>
       <button
         class="btn-icon"
