@@ -4,11 +4,13 @@ import { useEnvironmentsStore } from '../stores/environments.js'
 import { useProjectsStore } from '../stores/projects.js'
 import { useUiStore } from '../stores/ui.js'
 import EnvironmentsDialog from './EnvironmentsDialog.vue'
+import ProxyModal from './ProxyModal.vue'
 
 const ui = useUiStore()
 const projects = useProjectsStore()
 const environments = useEnvironmentsStore()
 const manageVisible = ref(false)
+const proxyVisible = ref(false)
 
 // Список и активный выбор живут по активному проекту.
 onMounted(() => environments.load(projects.activeProjectId))
@@ -68,6 +70,14 @@ function select(event) {
     </div>
     <div class="toolbar-right">
       <button
+        class="btn"
+        style="padding: 4px 10px; font-size: 12px;"
+        title="Локальный HTTP-прокси (перехватчик)"
+        @click="proxyVisible = true"
+      >
+        Proxy
+      </button>
+      <button
         class="btn-icon"
         :title="ui.theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'"
         aria-label="Переключить тему"
@@ -78,4 +88,5 @@ function select(event) {
     </div>
   </header>
   <EnvironmentsDialog :visible="manageVisible" @close="manageVisible = false" />
+  <ProxyModal :visible="proxyVisible" @close="proxyVisible = false" />
 </template>

@@ -1,12 +1,13 @@
 // Регистрация IPC-каналов. Renderer общается с main только через эти ручки
 // (см. src/preload/index.js). Префиксы: projects:*, requests:*, environments:*,
-// settings:*, http:*, postman:*, data:*, clipboard:*, mcp:*, mocks:*.
+// settings:*, http:*, postman:*, data:*, clipboard:*, mcp:*, mocks:*, proxy:*.
 // Push-каналы: menu:* (из меню), mocks:log (запись журнала мок-сервера).
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { readFile } from 'node:fs/promises'
 import * as storage from './storage.js'
 import { sendRequest, cancelRequest } from './http.js'
 import { getMcpStatus, applyMcpConfig } from './mcp.js'
+import { startProxy, stopProxy, getProxyStatus, getProxyLog, clearProxyLog } from './proxy.js'
 import {
   getMockStatus,
   startMockServer,
@@ -172,6 +173,13 @@ export function registerIpc(getMainWindow = () => null) {
   ipcMain.handle('mocks:stop', () => stopMockServer())
   ipcMain.handle('mocks:getLog', () => getMockLog())
   ipcMain.handle('mocks:clearLog', () => clearMockLog())
+
+  // Локальный HTTP-прокси (перехватчик): старт/стоп слушателя и pull-журнал перехваченных запросов.
+  ipcMain.handle('proxy:start', (_event, port) => startProxy(port))
+  ipcMain.handle('proxy:stop', () => stopProxy())
+  ipcMain.handle('proxy:status', () => getProxyStatus())
+  ipcMain.handle('proxy:getLog', () => getProxyLog())
+  ipcMain.handle('proxy:clearLog', () => clearProxyLog())
 
   // Живой журнал: каждая принятая запросом запись летит в открытое окно (push mocks:log).
   setLogListener((entry) => {
